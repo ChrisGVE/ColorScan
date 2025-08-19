@@ -1,0 +1,240 @@
+# Scan Colors: Fountain Pen Ink Color Analysis
+
+## Overview  
+This project's purpose is to detect and measure the photography of a color swatch, of fountain pen inks, and to provide a calibrated value for the color on the swatch. The premise of this project is that the color swatch is photographed on a white piece of paper on which the white balance is determined before analysing the color itself. The deliverable for this is a Rust crate with appropriate API.
+
+## Core Features  
+I. Takes an image as an input, high compatibility formats as well as modern image format as HEIC 
+II. Correction for general white balance based on a white background
+III. Detection of the support of color swatch, can be white, but also cream or off-white
+IV. Detection of the colored zone
+V. Color measurement that takes into consideration color shifts due to the swatch card tone
+VI. Output is a color specification
+
+Note: In practice ink swatches are often created using cotton swabs, as a consequence the whole color patch generally exhibits some gradient in terms of saturation. For light colors or colors with low saturation, the tint of the card can slightly to moderately shift the card tone. In addition, certain inks can exhibit a color sheen that can be different from the main ink color, sheen which depends on the direction of the light. Finally, there are cases where the ink contains small particulates, shimmer, of various colors, often silver or gold, but other particulate colors are used and sometimes mixed.
+
+# API Design & Interface
+
+## Primary API
+Simple function: image in → color coordinates out
+- Single `analyze_swatch(image_path: &Path) -> Result<ColorResult, AnalysisError>` function
+- Library handles image loading to access EXIF metadata
+- Returns both CIE Lab and LCh coordinates for perceptual uniformity
+- Minimal CLI tool for testing: file input → stdout result
+
+## Output Format
+```rust
+pub struct ColorResult {
+    pub lab: Lab,           // CIE Lab coordinates (perceptually uniform)
+    pub lch: Lch,           // CIE LCh coordinates (cylindrical Lab)
+    pub srgb: Srgb,         // sRGB for display
+    pub hex: String,        // Hex representation
+    pub confidence: f32,    // Analysis confidence (0.0-1.0)
+}
+```
+
+# Technical Architecture  
+
+## Technology Stack
+- **Language**: Rust
+- **Primary Libraries**: 
+  - image - load/save pixels, format support including HEIC
+  - imageproc - Otsu/adaptive thresholding, morphology, histogram ops
+  - opencv (Rust bindings) - contour detection, perspective correction, advanced white balance
+  - palette - precise color-space conversion (sRGB/Linear/Lab/LCh, etc)
+  - delta_e or empfindung - Delta E (CIEDE2000) for color differences
+  - kamadak-exif - EXIF metadata extraction
+- **Color Reference**: D65 illuminant as standard anchor point
+
+## Enhanced Dependency Stack
+```toml
+[dependencies]
+image = "0.25"
+imageproc = "0.25"
+opencv = { version = "0.95", features = ["buildtime-bindgen"] }
+palette = "0.7"
+empfindung = "0.1"      # CIEDE2000 color differences
+kamadak-exif = "0.6"    # EXIF metadata
+lab = "0.11"            # Additional Lab color space support
+rgb = "0.8"             # RGB utilities
+```
+
+## Calibration Standards & Constants
+- **Default Illuminant**: D65 (6504K) - industry standard for digital images
+- **Color Space**: Work primarily in perceptual space (CIE Lab/LCh)
+- **Color Temperature Range**: 3000K-6500K (avoiding very low temps)
+- **Minimum Swatch Size**: 10-15% of total image pixels for reliable analysis
+- **Color Accuracy Target**: ΔE < 3.0 for acceptable fountain pen ink differentiation
+- **Performance Target**: 100ms analysis time for smartphone-sized images
+
+## EXIF Metadata Extraction
+Essential metadata for color analysis:
+- White balance mode and settings
+- Color space (sRGB, Adobe RGB, P3)
+- Flash usage detection
+- Camera model (for future profiling capabilities)
+- ISO, exposure settings
+- Optional: distance/angle metadata for geometry hints
+
+## Processing pipeline
+
+1. Detect and rectify the sheet (paper)
+
+- Convert to Lab; use L channel + adaptive threshold to find the largest near-white, near-rectangular contour (the sheet).
+- Compute a homography and warp-perspective to fronto-parallel. (OpenCV `findContours` → `minAreaRect`/`approxPolyDP` → `getPerspectiveTransform`/`warpPerspective`). 
+
+2. Estimate illuminant / white balance
+
+- Use the paper region (border band of the rectified sheet) to estimate a neutral white.
+- Apply gray-world or `LearningBasedWB` from OpenCV; or try Retinex via `white-balance-rs` for tricky mixed light. (Keep everything in linear RGB for math, then convert back.) 
+- Future enhancement: standardize with a ColorChecker, can do chart-based calibration (not a Rust crate yet, but the approach is well documented and could be ported). 
+
+3. Remove the card background and isolate the ink blob
+
+- The swatch card itself may be off-white (cream). Build a paper color model from the sheet region (Lab mean/median and covariance).
+- Mask out pixels whose chroma/ΔE to the paper model is below a small threshold (they’re “paper/card”). Keep pixels with sufficiently higher chroma (the ink). Use morphology (open/close) to clean the mask. (imageproc + ΔE threshold). 
+
+4. Handle gradients & “transparency” (ink over paper)
+
+- Ink on paper is approximately a linear mixture in linear RGB: C_obs = α * C_ink + (1-α) * C_paper, with 0<α≤1.
+- Estimate C_paper from local neighborhood just outside the blob; estimate α per pixel by solving the least-squares mix against the three channels (clip sensibly).
+- To report a representative color, take a robust statistic over the blob: e.g., median of the central 50% of pixels by lightness (exclude darkest pooling and lightest feathering), then demix using the α estimate to get C_ink. Convert to Lab/LCh for reporting. (palette for conversions; your ΔE crate for thresholds.) 
+
+5. Report calibrated values
+
+- Return: sRGB hex (display), linear-RGB triplet (for math reproducibility), CIE Lab & LCh (perceptual), and optionally ΔE00 to a  nearest named reference(s). (Use delta_e or empfindung.)
+
+### Notes specific to fountain-pen swabs 
+- Gradients are expected; avoid single-point sampling. Use robust aggregation and exclude edges where paper texture shows through.
+- Sheen/shading can throw off WB and Lab—clip specular highlights by luminance percentile (e.g., ignore top/bottom 2–5%).
+- Paper choice matters: if you always include a margin of plain white printer paper as the global reference, the off-white card becomes “just another material” you’ll successfully mask out.
+- If you can include a small grey patch (neutral 18% card) on the sheet, illuminant estimation becomes more reliable under weird indoor lighting (gray-world assumption documented widely). 
+
+## Project Structure
+```
+scan_colors/
+├── src/
+│   ├── lib.rs              # Main library interface
+│   ├── constants.rs        # Compile-time calibration parameters
+│   ├── calibration/        # White balance & color correction
+│   │   ├── mod.rs
+│   │   ├── white_balance.rs
+│   │   └── illuminant.rs
+│   ├── detection/          # Paper & swatch detection
+│   │   ├── mod.rs
+│   │   ├── paper.rs
+│   │   └── swatch.rs
+│   ├── color/             # Color analysis & conversion
+│   │   ├── mod.rs
+│   │   ├── conversion.rs
+│   │   └── analysis.rs
+│   ├── exif/             # EXIF metadata handling
+│   │   ├── mod.rs
+│   │   └── extractor.rs
+│   └── error.rs          # Error types and handling
+├── assets/
+│   ├── test_samples/     # Unit test images with known properties
+│   └── references/       # Reference swatches for validation
+├── examples/             # Usage examples and CLI tool
+├── benches/             # Performance benchmarks
+├── tests/               # Integration tests
+└── docs/                # Additional documentation
+```
+
+## Performance & Scalability Strategy
+- **Multi-processing**: Utilize when possible for image analysis
+- **Vectorization**: SIMD operations for mathematical computations
+- **Adaptive Quality**: Faster algorithms for larger images to meet 100ms target
+- **Memory Efficiency**: Minimize footprint except for temporary image storage
+
+## Flash & Mixed Lighting Handling
+- **Current Approach**: Put flash handling in "consider later" category
+- **Smartphone Context**: Flash typically supplements rather than dominates ambient lighting
+- **Fallback Strategy**: Use D65 anchor point transformation when mixed lighting detected
+- **Future Research**: Investigate smartphone flash characteristics and power ratios
+
+# Development Roadmap  
+
+## Phase 1: Core Foundation (Weeks 1-2)
+- [ ] Basic project setup with dependencies
+- [ ] Image loading and EXIF extraction
+- [ ] D65 anchor point implementation
+- [ ] Basic Lab/LCh color conversion
+
+## Phase 2: Detection Pipeline (Weeks 3-4)
+- [ ] Paper detection and rectification
+- [ ] White balance estimation using paper region
+- [ ] Swatch area detection and masking
+
+## Phase 3: Color Analysis (Weeks 5-6)
+- [ ] Gradient handling and robust color extraction
+- [ ] Paper tone compensation
+- [ ] Confidence scoring system
+
+## Phase 4: Validation & Optimization (Weeks 7-8)
+- [ ] Performance optimization to meet 100ms target
+- [ ] Comprehensive testing with fountain pen samples
+- [ ] CLI tool implementation
+
+## Future Enhancements
+- ColorChecker chart calibration support
+- Camera-specific profile integration (using Adobe DNG system)
+- Multi-color extraction for complex inks
+- Sheen and shimmer characterization
+- Cross-camera color constancy adaptation
+
+# Risks and Mitigations  
+
+## Technical Risks
+- **Risk**: Smartphone color variation affecting accuracy
+  - **Mitigation**: Use D65 anchor point and Adobe DNG profile system
+- **Risk**: Performance constraint with complex algorithms  
+  - **Mitigation**: Adaptive quality scaling and vectorization
+- **Risk**: Paper type variation in fountain pen community
+  - **Mitigation**: Start simple, expand based on empirical testing
+
+## Validation Challenges
+- **Risk**: No absolute color truth for fountain pen inks
+  - **Mitigation**: Empirical validation, consistency testing, progressive refinement
+- **Risk**: Lighting condition variety
+  - **Mitigation**: Focus on common conditions (indoor, daylight), defer exotic scenarios
+
+# Testing Strategy
+
+## Test Data Sources
+- Personal fountain pen swatch collection for experimentation
+- Web-based reference comparisons
+- Consistent re-testing of same inks for reliability validation
+
+## Coverage Requirements
+- **Line Coverage**: Minimum 90% across all modules  
+- **Edge Cases**: Small swatches, low contrast, various paper types
+- **Performance Tests**: 100ms constraint validation across image sizes
+- **Color Accuracy**: ΔE < 3.0 for fountain pen ink differentiation
+
+## Decision Log
+| Date | Decision | Made By | Rationale |
+|------|----------|---------|-----------|
+| 2025-01-19 | Use D65 as standard illuminant | System | Industry standard, extensive research support |
+| 2025-01-19 | Adobe DNG for camera profiles | System | Open, license-free, 350+ camera support |
+| 2025-01-19 | CIE Lab + LCh output format | System | Perceptually uniform, intuitive for users |
+| 2025-01-19 | Defer flash handling | System | Smartphone context, focus on anchor point first |
+
+## Assumptions
+1. Input images are of sufficient quality for analysis (smartphone-grade or better)
+2. Swatch occupies minimum 10-15% of image area for reliable data
+3. Users primarily use modern smartphones with decent color management
+4. Indoor/daylight lighting conditions are most common use cases
+
+## Constraints
+1. 100ms response time for smartphone-sized images
+2. Small memory footprint (excluding temporary image storage)
+3. Must differentiate among 1000s of fountain pen inks
+4. Production-ready accuracy and responsiveness balance
+
+## Out of Scope
+- Scientific-precision colorimetry
+- Swatches for non-fountain-pen pigments  
+- Real-time video processing
+- Advanced lighting simulation or modeling
+</PRD>

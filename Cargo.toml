@@ -1,0 +1,37 @@
+[package]
+name = "scan_colors"
+version = "0.1.0"
+edition = "2021"
+authors = ["scan_colors contributors"]
+description = "Fountain pen ink color analysis with calibrated color measurement"
+repository = "https://github.com/user/scan_colors"
+license = "MIT OR Apache-2.0"
+keywords = ["color", "image-processing", "fountain-pen", "colorimetry", "computer-vision"]
+categories = ["multimedia::images", "science", "computer-vision"]
+readme = "README.md"
+
+[dependencies]
+image = "0.25"
+imageproc = "0.25"
+opencv = { version = "0.95", features = ["buildtime-bindgen"] }
+palette = "0.7"
+empfindung = "0.1"
+kamadak-exif = "0.6"
+lab = "0.11"
+rgb = "0.8"
+anyhow = "1.0"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+approx = "0.5"
+
+[[bench]]
+name = "color_analysis"
+harness = false
+
+[[example]]
+name = "cli"
+path = "examples/cli.rs"
