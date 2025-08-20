@@ -1,0 +1,62 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 1,
+        "title": "Fix System Dependencies",
+        "description": "Install OpenCV system dependency and resolve compilation issues",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 2,
+        "title": "Implement Missing Module Files",
+        "description": "Create missing module implementations for core functionality",
+        "details": "Create src/detection/paper.rs, src/detection/swatch.rs, src/color/conversion.rs, src/color/analysis.rs",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 3,
+        "title": "Implement Core analyze_swatch Function",
+        "description": "Complete the main API function that orchestrates the entire color analysis pipeline",
+        "details": "Implement the analyze_swatch() function in lib.rs that integrates EXIF extraction, paper detection, white balance, swatch isolation, and color measurement",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          1,
+          2
+        ],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": 4,
+        "title": "Setup Testing Framework",
+        "description": "Create comprehensive testing infrastructure for validation",
+        "details": "Set up integration tests, performance benchmarks, and sample image collection strategy",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          3
+        ],
+        "priority": "medium",
+        "subtasks": []
+      }
+    ],
+    "metadata": {
+      "version": "1.0.0",
+      "created": "2025-01-20T12:00:00Z",
+      "modified": "2025-01-20T12:00:00Z",
+      "description": "Scan Colors fountain pen ink analysis project tasks",
+      "updated": "2025-08-20T10:59:54.956Z"
+    }
+  }
+}
