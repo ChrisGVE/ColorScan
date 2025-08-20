@@ -97,6 +97,62 @@ cargo run --example cli swatch.heic > result.json
 - Minimum supported Rust version: 1.70.0
 - Uses 2021 edition features
 
+## Development Setup
+
+### Environment Variables
+
+The project automatically detects OpenCV through pkg-config. No additional environment variables are typically needed.
+
+### Compilation Requirements
+
+The following system components are required for building:
+
+1. **OpenCV 4.x** - Computer vision library
+   - Tested with OpenCV 4.12.0
+   - Must be discoverable via `pkg-config --exists opencv4`
+   - Required modules: core, imgproc, imgcodecs, photo
+
+2. **pkg-config** - Build configuration discovery
+   - Used for OpenCV flags: `pkg-config --cflags --libs opencv4`
+   - Handles include paths and linking automatically
+
+3. **C++ Compiler** - For OpenCV Rust bindings
+   - Clang (preferred) or GCC
+   - Required for bindgen code generation
+
+### Verified Configurations
+
+**macOS (Homebrew)**
+```bash
+brew install opencv pkg-config
+# OpenCV 4.12.0 confirmed working
+# Located at: /usr/local/opt/opencv/
+```
+
+**Build Verification**
+```bash
+# Test OpenCV detection
+pkg-config --exists opencv4 && echo "✓ OpenCV found"
+pkg-config --modversion opencv4  # Should show 4.x.x
+
+# Test compilation
+cargo check  # Should compile opencv crate successfully
+```
+
+### Troubleshooting
+
+If compilation fails with OpenCV errors:
+
+1. Verify OpenCV installation: `pkg-config --exists opencv4`
+2. Check modules are available: `pkg-config --libs opencv4 | grep core`
+3. Ensure pkg-config is in PATH
+4. On macOS, verify Homebrew paths are correct
+
+The opencv Rust crate (v0.95.1) uses buildtime-bindgen and should automatically:
+- Detect system OpenCV via pkg-config
+- Generate appropriate Rust bindings
+- Handle linking flags
+
 ## Image Guidelines
 
 For best results:
