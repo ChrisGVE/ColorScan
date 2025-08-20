@@ -14,7 +14,7 @@ readme = "README.md"
 image = "0.25"
 imageproc = "0.25"
 opencv = "0.95"  # Requires system OpenCV installation
-palette = { version = "0.7", features = ["serde"] }
+palette = { version = "0.7", features = ["serializing"] }
 empfindung = "0.2"
 kamadak-exif = "0.6"
 lab = "0.11"
