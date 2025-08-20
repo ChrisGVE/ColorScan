@@ -13,9 +13,9 @@ readme = "README.md"
 [dependencies]
 image = "0.25"
 imageproc = "0.25"
-opencv = { version = "0.95", features = ["buildtime-bindgen"] }
-palette = "0.7"
-empfindung = "0.1"
+opencv = "0.95"  # Requires system OpenCV installation
+palette = { version = "0.7", features = ["serde"] }
+empfindung = "0.2"
 kamadak-exif = "0.6"
 lab = "0.11"
 rgb = "0.8"
