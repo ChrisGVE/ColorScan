@@ -38,3 +38,4 @@ claude.json
 tmp/
 **/LT_*.*
 **/*_temp_*.*
+assets/test_samples/
