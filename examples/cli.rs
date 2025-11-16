@@ -2,7 +2,7 @@
 //!
 //! Basic CLI tool for testing color analysis functionality
 
-use scan_colors::{analyze_swatch, ColorResult, AnalysisError};
+use scan_colors::{analyze_swatch, ColorResult};
 use std::{env, path::Path, process};
 use serde_json;
 

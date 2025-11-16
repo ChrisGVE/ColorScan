@@ -47,6 +47,31 @@ pub struct ExposureInfo {
 pub struct ExifExtractor;
 
 impl ExifExtractor {
+    /// Extract EXIF orientation value from image file
+    ///
+    /// Returns the EXIF orientation value (1-8) or 1 (normal) if not found.
+    /// See: https://www.impulseadventure.com/photo/exif-orientation.html
+    pub fn extract_orientation(image_path: &Path) -> u16 {
+        use exif::{In, Reader, Tag};
+        use std::fs::File;
+        use std::io::BufReader;
+
+        let file = match File::open(image_path) {
+            Ok(f) => f,
+            Err(_) => return 1, // Default: normal orientation
+        };
+
+        let exif = match Reader::new().read_from_container(&mut BufReader::new(&file)) {
+            Ok(e) => e,
+            Err(_) => return 1,
+        };
+
+        exif.get_field(Tag::Orientation, In::PRIMARY)
+            .and_then(|f| f.value.get_uint(0))
+            .map(|v| v as u16)
+            .unwrap_or(1)
+    }
+
     /// Extract color-relevant metadata from image file
     ///
     /// # Arguments

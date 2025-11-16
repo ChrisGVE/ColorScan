@@ -76,7 +76,7 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
     use crate::color::conversion::ColorConverter;
 
     // Step 1: Load image
-    let image = opencv::imgcodecs::imread(
+    let mut image = opencv::imgcodecs::imread(
         image_path.to_str().ok_or_else(|| {
             AnalysisError::ProcessingError("Invalid image path encoding".into())
         })?,
@@ -88,9 +88,12 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
         return Err(AnalysisError::ProcessingError("Image file is empty or corrupted".into()));
     }
 
-    // Step 2: Extract EXIF metadata (optional, for future illuminant estimation)
+    // Step 2: Extract EXIF metadata and apply orientation correction
     let _metadata = ExifExtractor::extract_color_metadata(image_path)
-        .ok(); // Ignore errors, EXIF is optional
+        .ok(); // Ignore errors, EXIF is optional (for future illuminant estimation)
+
+    // Apply EXIF orientation correction if available
+    image = apply_exif_orientation(image, image_path)?;
 
     // Step 3: Detect paper region and rectify perspective
     let paper_detector = PaperDetector::new();
@@ -135,6 +138,76 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
         hex,
         confidence: color_analysis.confidence,
     })
+}
+
+/// Apply EXIF orientation correction to image
+///
+/// Many cameras (especially smartphones) store images in one orientation but
+/// record the intended orientation in EXIF metadata. OpenCV imread() doesn't
+/// automatically apply this rotation, so we need to do it manually.
+fn apply_exif_orientation(image: opencv::core::Mat, image_path: &Path) -> Result<opencv::core::Mat> {
+    use crate::exif::extractor::ExifExtractor;
+
+    // Get EXIF orientation (1-8, default 1 = normal)
+    let orientation = ExifExtractor::extract_orientation(image_path);
+
+    // Apply transformation based on orientation value
+    // EXIF orientation values: https://www.impulseadventure.com/photo/exif-orientation.html
+    let mut result = opencv::core::Mat::default();
+
+    match orientation {
+        1 => {
+            // Normal - no rotation needed
+            return Ok(image);
+        }
+        2 => {
+            // Flip horizontal
+            opencv::core::flip(&image, &mut result, 1)
+                .map_err(|e| AnalysisError::ProcessingError(format!("Orientation flip failed: {}", e)))?;
+        }
+        3 => {
+            // Rotate 180°
+            opencv::core::rotate(&image, &mut result, opencv::core::ROTATE_180)
+                .map_err(|e| AnalysisError::ProcessingError(format!("Orientation rotation failed: {}", e)))?;
+        }
+        4 => {
+            // Flip vertical
+            opencv::core::flip(&image, &mut result, 0)
+                .map_err(|e| AnalysisError::ProcessingError(format!("Orientation flip failed: {}", e)))?;
+        }
+        5 => {
+            // Rotate 90° CW + flip horizontal
+            let mut temp = opencv::core::Mat::default();
+            opencv::core::rotate(&image, &mut temp, opencv::core::ROTATE_90_CLOCKWISE)
+                .map_err(|e| AnalysisError::ProcessingError(format!("Orientation rotation failed: {}", e)))?;
+            opencv::core::flip(&temp, &mut result, 1)
+                .map_err(|e| AnalysisError::ProcessingError(format!("Orientation flip failed: {}", e)))?;
+        }
+        6 => {
+            // Rotate 90° CW
+            opencv::core::rotate(&image, &mut result, opencv::core::ROTATE_90_CLOCKWISE)
+                .map_err(|e| AnalysisError::ProcessingError(format!("Orientation rotation failed: {}", e)))?;
+        }
+        7 => {
+            // Rotate 90° CCW + flip horizontal
+            let mut temp = opencv::core::Mat::default();
+            opencv::core::rotate(&image, &mut temp, opencv::core::ROTATE_90_COUNTERCLOCKWISE)
+                .map_err(|e| AnalysisError::ProcessingError(format!("Orientation rotation failed: {}", e)))?;
+            opencv::core::flip(&temp, &mut result, 1)
+                .map_err(|e| AnalysisError::ProcessingError(format!("Orientation flip failed: {}", e)))?;
+        }
+        8 => {
+            // Rotate 90° CCW
+            opencv::core::rotate(&image, &mut result, opencv::core::ROTATE_90_COUNTERCLOCKWISE)
+                .map_err(|e| AnalysisError::ProcessingError(format!("Orientation rotation failed: {}", e)))?;
+        }
+        _ => {
+            // Unknown orientation, return as-is
+            return Ok(image);
+        }
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]

@@ -4,15 +4,16 @@
 //! white balance correction to normalize colors to D65 standard.
 
 use crate::error::{AnalysisError, Result};
-use crate::constants::d65;
 use opencv::{core::Mat, prelude::*};
-use palette::{Lab, Srgb, Xyz, IntoColor, white_point::D65};
+use palette::{Lab, Srgb, IntoColor, white_point::D65};
 
 /// White balance estimator using multiple algorithms
 pub struct WhiteBalanceEstimator {
     /// Whether to use gray world assumption
+    #[allow(dead_code)]
     use_gray_world: bool,
     /// Whether to use learning-based estimation
+    #[allow(dead_code)]
     use_learning_based: bool,
 }
 

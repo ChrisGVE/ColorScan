@@ -9,7 +9,7 @@
 //! Algorithm tag: `algo-robust-color-extraction`
 
 use opencv::{core::Mat, imgproc::cvt_color, imgproc::COLOR_BGR2Lab, prelude::*};
-use palette::{Lab, Srgb};
+use palette::Lab;
 use crate::{AnalysisError, Result, color::ColorConverter};
 
 /// Minimum color difference from paper for valid ink (ΔE)

@@ -11,10 +11,9 @@
 use opencv::{
     core::{Mat, Point2f, Point, Scalar, Size, Vector, BORDER_CONSTANT},
     imgproc::{
-        approx_poly_dp, arc_length, canny, find_contours, get_perspective_transform,
-        warp_perspective, cvt_color, gaussian_blur, threshold, morphology_ex,
-        CHAIN_APPROX_SIMPLE, MORPH_CLOSE, MORPH_OPEN, RETR_EXTERNAL,
-        THRESH_BINARY, THRESH_OTSU, COLOR_BGR2Lab,
+        approx_poly_dp, arc_length, find_contours, get_perspective_transform,
+        warp_perspective, gaussian_blur,
+        CHAIN_APPROX_SIMPLE, RETR_EXTERNAL,
     },
     prelude::*,
 };
@@ -32,12 +31,6 @@ const MAX_RECTIFICATION_ANGLE: f64 = 45.0;
 
 /// Polygon approximation epsilon as fraction of perimeter (2%)
 const POLY_APPROX_EPSILON: f64 = 0.02;
-
-/// Gaussian blur sigma for noise reduction
-const BLUR_SIGMA: f64 = 1.0;
-
-/// Morphological kernel size
-const MORPH_KERNEL_SIZE: i32 = 3;
 
 /// Paper detection result with rectification data
 #[derive(Debug, Clone)]
@@ -57,6 +50,7 @@ pub struct PaperDetectionResult {
 /// Paper detector implementing adaptive detection with foreign object exclusion
 pub struct PaperDetector {
     min_area_ratio: f64,
+    #[allow(dead_code)]
     max_angle: f64,
     poly_epsilon: f64,
 }
@@ -104,28 +98,22 @@ impl PaperDetector {
     /// - Paper area too small
     /// - Rectification angle exceeds limits
     pub fn detect(&self, image: &Mat) -> Result<PaperDetectionResult> {
-        // Step 1: Preprocessing
-        let lab_image = self.preprocess(image)?;
+        // Step 1: Edge detection to find card boundary
+        let edges = self.detect_edges(image)?;
 
-        // Step 2: Adaptive thresholding
-        let binary = self.threshold_paper(&lab_image)?;
+        // Step 2: Find paper contour from edges
+        let paper_contour = self.find_paper_contour_from_edges(&edges, image)?;
 
-        // Step 3: Foreign object detection
-        let foreign_mask = self.detect_foreign_objects(image, &binary)?;
+        // Step 3: Foreign object detection (simplified - uses color analysis)
+        let foreign_mask = self.detect_foreign_objects_simple(image)?;
 
-        // Step 4: Morphological operations (excluding foreign objects)
-        let cleaned = self.morphological_ops(&binary, &foreign_mask)?;
-
-        // Step 5: Contour detection and filtering
-        let paper_contour = self.find_paper_contour(&cleaned, image)?;
-
-        // Step 6: Polygon approximation
+        // Step 4: Polygon approximation
         let corners = self.approximate_rectangle(&paper_contour)?;
 
-        // Step 7: Homography and rectification
+        // Step 5: Homography and rectification
         let (rectified, homography) = self.rectify_image(image, &corners)?;
 
-        // Apply foreign mask to rectified image
+        // Step 6: Apply foreign mask to rectified image
         let rectified_foreign_mask = self.warp_mask(&foreign_mask, &homography, rectified.size()?)?;
 
         // Compute confidence
@@ -140,159 +128,68 @@ impl PaperDetector {
         })
     }
 
-    /// Preprocess image: convert to Lab and blur
-    fn preprocess(&self, image: &Mat) -> Result<Mat> {
-        let mut lab = Mat::default();
-        cvt_color(image, &mut lab, COLOR_BGR2Lab, 0, opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT)
-            .map_err(|e| AnalysisError::ProcessingError(format!("Lab conversion failed: {}", e)))?;
+    /// Detect edges using Canny edge detection
+    fn detect_edges(&self, image: &Mat) -> Result<Mat> {
+        // Convert to grayscale
+        let mut gray = Mat::default();
+        opencv::imgproc::cvt_color(image, &mut gray, opencv::imgproc::COLOR_BGR2GRAY, 0, opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT)
+            .map_err(|e| AnalysisError::ProcessingError(format!("Grayscale conversion failed: {}", e)))?;
 
+        // Apply Gaussian blur to reduce noise
         let mut blurred = Mat::default();
         gaussian_blur(
-            &lab,
+            &gray,
             &mut blurred,
-            Size::new(0, 0),
-            BLUR_SIGMA,
-            BLUR_SIGMA,
+            Size::new(5, 5),
+            1.5,
+            1.5,
             BORDER_CONSTANT,
             opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT,
         )
         .map_err(|e| AnalysisError::ProcessingError(format!("Gaussian blur failed: {}", e)))?;
 
-        Ok(blurred)
-    }
-
-    /// Apply adaptive thresholding to detect bright paper regions
-    fn threshold_paper(&self, lab_image: &Mat) -> Result<Mat> {
-        // Extract L* channel (lightness)
-        let mut channels = Vector::<Mat>::new();
-        opencv::core::split(lab_image, &mut channels)
-            .map_err(|e| AnalysisError::ProcessingError(format!("Channel split failed: {}", e)))?;
-
-        let l_channel = channels.get(0)
-            .map_err(|e| AnalysisError::ProcessingError(format!("L* channel access failed: {}", e)))?;
-
-        // Apply Otsu's thresholding
-        let mut binary = Mat::default();
-        threshold(&l_channel, &mut binary, 0.0, 255.0, THRESH_BINARY | THRESH_OTSU)
-            .map_err(|e| AnalysisError::ProcessingError(format!("Otsu threshold failed: {}", e)))?;
-
-        Ok(binary)
-    }
-
-    /// Detect foreign objects using edge detection and contour analysis
-    fn detect_foreign_objects(&self, image: &Mat, binary: &Mat) -> Result<Mat> {
-        // Create initial mask (all false = no foreign objects)
-        let mut mask = Mat::zeros(binary.rows(), binary.cols(), opencv::core::CV_8UC1)
-            .map_err(|e| AnalysisError::ProcessingError(format!("Mask creation failed: {}", e)))?
-            .to_mat()
-            .map_err(|e| AnalysisError::ProcessingError(format!("Mask conversion failed: {}", e)))?;
-
-        // Convert to grayscale for edge detection
-        let mut gray = Mat::default();
-        opencv::imgproc::cvt_color(image, &mut gray, opencv::imgproc::COLOR_BGR2GRAY, 0, opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT)
-            .map_err(|e| AnalysisError::ProcessingError(format!("Grayscale conversion failed: {}", e)))?;
-
-        // Apply Canny edge detection for high-contrast edges
+        // Apply Canny edge detection
         let mut edges = Mat::default();
-        opencv::imgproc::canny(&gray, &mut edges, 50.0, 150.0, 3, false)
+        opencv::imgproc::canny(&blurred, &mut edges, 50.0, 150.0, 3, false)
             .map_err(|e| AnalysisError::ProcessingError(format!("Canny edge detection failed: {}", e)))?;
 
-        // Find contours in edge image
-        let mut contours = Vector::<VectorOfPoint>::new();
-        find_contours(&edges, &mut contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE, Point::new(0, 0))
-            .map_err(|e| AnalysisError::ProcessingError(format!("Edge contour detection failed: {}", e)))?;
-
-        // Identify foreign objects by geometry
-        for i in 0..contours.len() {
-            let contour = contours.get(i)
-                .map_err(|e| AnalysisError::ProcessingError(format!("Contour access failed: {}", e)))?;
-
-            let area = opencv::imgproc::contour_area(&contour, false)
-                .map_err(|e| AnalysisError::ProcessingError(format!("Area calculation failed: {}", e)))?;
-
-            // Skip very small contours (noise)
-            if area < 100.0 {
-                continue;
-            }
-
-            // Get bounding rectangle
-            let rect = opencv::imgproc::bounding_rect(&contour)
-                .map_err(|e| AnalysisError::ProcessingError(format!("Bounding rect failed: {}", e)))?;
-
-            // Calculate aspect ratio
-            let aspect_ratio = if rect.height > 0 {
-                rect.width as f64 / rect.height as f64
-            } else {
-                1.0
-            };
-
-            // Detect rulers/tape: high aspect ratio (>5:1 or <1:5) and small relative area
-            let image_area = (binary.rows() * binary.cols()) as f64;
-            let relative_area = area / image_area;
-
-            let is_foreign = (aspect_ratio > 5.0 || aspect_ratio < 0.2) && relative_area < 0.05;
-
-            // Mark foreign objects in mask
-            if is_foreign {
-                opencv::imgproc::draw_contours(
-                    &mut mask,
-                    &contours,
-                    i as i32,
-                    Scalar::all(255.0),
-                    -1, // Fill
-                    opencv::imgproc::LINE_8,
-                    &Mat::default(),
-                    i32::MAX,
-                    Point::new(0, 0),
-                )
-                .map_err(|e| AnalysisError::ProcessingError(format!("Contour drawing failed: {}", e)))?;
-            }
-        }
-
-        Ok(mask)
-    }
-
-    /// Apply morphological operations excluding foreign objects
-    fn morphological_ops(&self, binary: &Mat, foreign_mask: &Mat) -> Result<Mat> {
+        // Dilate edges to close gaps
         let kernel = opencv::imgproc::get_structuring_element(
             opencv::imgproc::MORPH_RECT,
-            Size::new(MORPH_KERNEL_SIZE, MORPH_KERNEL_SIZE),
-            opencv::core::Point::new(-1, -1),
+            Size::new(3, 3),
+            Point::new(-1, -1),
         )
         .map_err(|e| AnalysisError::ProcessingError(format!("Kernel creation failed: {}", e)))?;
 
-        // Opening: remove noise
-        let mut opened = Mat::default();
-        morphology_ex(binary, &mut opened, MORPH_OPEN, &kernel, opencv::core::Point::new(-1, -1), 1, BORDER_CONSTANT, Scalar::default())
-            .map_err(|e| AnalysisError::ProcessingError(format!("Opening operation failed: {}", e)))?;
+        let mut dilated = Mat::default();
+        opencv::imgproc::dilate(
+            &edges,
+            &mut dilated,
+            &kernel,
+            Point::new(-1, -1),
+            1,
+            BORDER_CONSTANT,
+            opencv::core::Scalar::all(0.0),
+        )
+        .map_err(|e| AnalysisError::ProcessingError(format!("Dilation failed: {}", e)))?;
 
-        // Closing: fill gaps
-        let mut closed = Mat::default();
-        morphology_ex(&opened, &mut closed, MORPH_CLOSE, &kernel, opencv::core::Point::new(-1, -1), 1, BORDER_CONSTANT, Scalar::default())
-            .map_err(|e| AnalysisError::ProcessingError(format!("Closing operation failed: {}", e)))?;
-
-        // Exclude foreign objects
-        let mut result = Mat::default();
-        opencv::core::bitwise_and(&closed, &closed, &mut result, foreign_mask)
-            .map_err(|e| AnalysisError::ProcessingError(format!("Mask application failed: {}", e)))?;
-
-        Ok(result)
+        Ok(dilated)
     }
 
-    /// Find the largest rectangular paper contour
-    fn find_paper_contour(&self, binary: &Mat, original_image: &Mat) -> Result<VectorOfPoint> {
+    /// Find paper contour from edge image
+    fn find_paper_contour_from_edges(&self, edges: &Mat, original_image: &Mat) -> Result<VectorOfPoint> {
         let mut contours = Vector::<VectorOfPoint>::new();
-        find_contours(binary, &mut contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE, opencv::core::Point::new(0, 0))
+        find_contours(edges, &mut contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE, Point::new(0, 0))
             .map_err(|e| AnalysisError::ProcessingError(format!("Contour detection failed: {}", e)))?;
 
         if contours.is_empty() {
-            return Err(AnalysisError::NoSwatchDetected("No contours found in image".into()));
+            return Err(AnalysisError::NoSwatchDetected("No contours found in edge image".into()));
         }
 
         let image_area = (original_image.rows() * original_image.cols()) as f64;
         let min_area = image_area * self.min_area_ratio;
 
-        // Find largest contour that meets area requirement
+        // Find largest rectangular contour that meets area requirement
         let mut best_contour: Option<VectorOfPoint> = None;
         let mut best_area = 0.0;
 
@@ -302,7 +199,17 @@ impl PaperDetector {
             let area = opencv::imgproc::contour_area(&contour, false)
                 .map_err(|e| AnalysisError::ProcessingError(format!("Area calculation failed: {}", e)))?;
 
-            if area >= min_area && area > best_area {
+            // Check if contour approximates to a rectangle
+            let perimeter = arc_length(&contour, true)
+                .map_err(|e| AnalysisError::ProcessingError(format!("Perimeter calculation failed: {}", e)))?;
+            let epsilon = perimeter * self.poly_epsilon;
+
+            let mut approx = VectorOfPoint::new();
+            approx_poly_dp(&contour, &mut approx, epsilon, true)
+                .map_err(|e| AnalysisError::ProcessingError(format!("Polygon approximation failed: {}", e)))?;
+
+            // Only consider 4-sided polygons (rectangles/quadrilaterals)
+            if approx.len() == 4 && area >= min_area && area > best_area {
                 best_area = area;
                 best_contour = Some(contour);
             }
@@ -310,9 +217,21 @@ impl PaperDetector {
 
         best_contour.ok_or_else(|| {
             AnalysisError::NoSwatchDetected(
-                format!("No paper region found (minimum {}% of image area required)", self.min_area_ratio * 100.0)
+                format!("No rectangular paper region found (minimum {}% of image area required)", self.min_area_ratio * 100.0)
             )
         })
+    }
+
+    /// Simplified foreign object detection
+    fn detect_foreign_objects_simple(&self, image: &Mat) -> Result<Mat> {
+        // For now, create an empty mask (no foreign objects detected)
+        // This can be enhanced later with color-based detection
+        let mask = Mat::zeros(image.rows(), image.cols(), opencv::core::CV_8UC1)
+            .map_err(|e| AnalysisError::ProcessingError(format!("Mask creation failed: {}", e)))?
+            .to_mat()
+            .map_err(|e| AnalysisError::ProcessingError(format!("Mask conversion failed: {}", e)))?;
+
+        Ok(mask)
     }
 
     /// Approximate contour as rectangle (4 corners)

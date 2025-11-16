@@ -8,12 +8,13 @@
 //!
 //! Algorithm tag: `algo-d65-chromatic-adaptation`
 
-use palette::{Lab, Lch, Srgb, FromColor, IntoColor, white_point::D65};
+use palette::{Lab, Lch, Srgb, FromColor, IntoColor};
 use crate::{constants::D65_WHITE_POINT_XYZ, AnalysisError, Result};
 
 /// Color converter with chromatic adaptation support
 pub struct ColorConverter {
     /// Target white point (always D65)
+    #[allow(dead_code)]
     target_white_point: [f32; 3],
 }
 
