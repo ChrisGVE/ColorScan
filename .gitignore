@@ -39,5 +39,5 @@ tmp/
 **/LT_*.*
 **/*_temp_*.*
 
-# Local test sample images (may contain personal data - not for CI)
-/assets/local_test_samples/
+# Local test sample images and validation debug output (may contain personal data - not for CI)
+/validation/

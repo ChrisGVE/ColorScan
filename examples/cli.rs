@@ -31,10 +31,10 @@ fn main() {
                         debug_output_dir = Some(PathBuf::from(next_arg));
                         i += 1;
                     } else {
-                        debug_output_dir = Some(PathBuf::from("tmp"));
+                        debug_output_dir = Some(PathBuf::from("validation"));
                     }
                 } else {
-                    debug_output_dir = Some(PathBuf::from("tmp"));
+                    debug_output_dir = Some(PathBuf::from("validation"));
                 }
             }
             "--help" | "-h" => {
@@ -74,7 +74,7 @@ fn main() {
     }
 
     if debug_mode {
-        let output_dir = debug_output_dir.unwrap_or_else(|| PathBuf::from("tmp"));
+        let output_dir = debug_output_dir.unwrap_or_else(|| PathBuf::from("validation"));
         match analyze_swatch_debug(image_path) {
             Ok((result, debug_output)) => {
                 print_result(&result);
@@ -111,7 +111,7 @@ fn print_help(program_name: &str) {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --debug [DIR]    Save debug images (corrected image, swatch fragment)");
-    eprintln!("                   Optional: specify output directory (default: tmp/)");
+    eprintln!("                   Optional: specify output directory (default: validation/)");
     eprintln!("  --help, -h       Show this help message");
     eprintln!();
     eprintln!("Examples:");
@@ -184,12 +184,13 @@ fn print_result(result: &ColorResult) {
     eprintln!();
     eprintln!("Color Analysis Summary:");
     eprintln!("  Hex Color: {}", result.hex);
-    eprintln!("  Lab Values: L*={:.1}, a*={:.1}, b*={:.1}", 
+    eprintln!("  Munsell: {}", result.munsell);
+    eprintln!("  Lab Values: L*={:.1}, a*={:.1}, b*={:.1}",
               result.lab.l, result.lab.a, result.lab.b);
-    eprintln!("  LCh Values: L*={:.1}, C*={:.1}, h°={:.1}", 
+    eprintln!("  LCh Values: L*={:.1}, C*={:.1}, h°={:.1}",
               result.lch.l, result.lch.chroma, result.lch.hue.into_positive_degrees());
     eprintln!("  Confidence: {:.1}%", result.confidence * 100.0);
-    
+
     if result.confidence < 0.5 {
         eprintln!("  Warning: Low confidence result. Consider better lighting or larger swatch.");
     }

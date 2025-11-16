@@ -44,6 +44,8 @@ pub struct ColorResult {
     pub srgb: Srgb,
     /// Hexadecimal color representation
     pub hex: String,
+    /// Munsell color notation (Hue Value/Chroma)
+    pub munsell: String,
     /// Analysis confidence score (0.0 = low, 1.0 = high)
     pub confidence: f32,
 }
@@ -141,12 +143,16 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
     let srgb = converter.lab_to_srgb(color_analysis.lab);
     let hex = converter.srgb_to_hex(srgb);
 
-    // Step 8: Return complete result
+    // Step 8: Convert to Munsell notation
+    let munsell = srgb_to_munsell_notation(srgb);
+
+    // Step 9: Return complete result
     Ok(ColorResult {
         lab: color_analysis.lab,
         lch,
         srgb,
         hex,
+        munsell,
         confidence: color_analysis.confidence,
     })
 }
@@ -227,15 +233,19 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
     let srgb = converter.lab_to_srgb(color_analysis.lab);
     let hex = converter.srgb_to_hex(srgb);
 
-    // Step 8: Extract swatch fragment for debug output
+    // Step 8: Convert to Munsell notation
+    let munsell = srgb_to_munsell_notation(srgb);
+
+    // Step 9: Extract swatch fragment for debug output
     let swatch_fragment = extract_swatch_fragment(&paper_result.rectified_image, &swatch_result.swatch_mask)?;
 
-    // Step 9: Return results and debug output
+    // Step 10: Return results and debug output
     let color_result = ColorResult {
         lab: color_analysis.lab,
         lch,
         srgb,
         hex,
+        munsell,
         confidence: color_analysis.confidence,
     };
 
@@ -249,6 +259,9 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
 }
 
 /// Extract the swatch fragment from the rectified image using the mask
+///
+/// Returns only the pixels that are actually used for color analysis (masked region).
+/// Pixels outside the mask are set to black for visualization.
 fn extract_swatch_fragment(image: &opencv::core::Mat, mask: &opencv::core::Mat) -> Result<opencv::core::Mat> {
     // Find bounding rectangle of the swatch region
     let mut contours = opencv::core::Vector::<opencv::core::Vector<opencv::core::Point>>::new();
@@ -287,15 +300,50 @@ fn extract_swatch_fragment(image: &opencv::core::Mat, mask: &opencv::core::Mat) 
     let rect = opencv::imgproc::bounding_rect(&contour)
         .map_err(|e| AnalysisError::ProcessingError(format!("Bounding rect failed: {}", e)))?;
 
-    // Extract ROI (region of interest)
-    let roi = opencv::core::Mat::roi(image, rect)
-        .map_err(|e| AnalysisError::ProcessingError(format!("ROI extraction failed: {}", e)))?;
+    // Extract ROI from both image and mask
+    let image_roi = opencv::core::Mat::roi(image, rect)
+        .map_err(|e| AnalysisError::ProcessingError(format!("Image ROI extraction failed: {}", e)))?;
+    let mask_roi = opencv::core::Mat::roi(mask, rect)
+        .map_err(|e| AnalysisError::ProcessingError(format!("Mask ROI extraction failed: {}", e)))?;
 
-    // Clone the ROI to create an independent Mat
-    let fragment = roi.try_clone()
-        .map_err(|e| AnalysisError::ProcessingError(format!("Fragment clone failed: {}", e)))?;
+    // Clone the image ROI
+    let image_cropped = image_roi.try_clone()
+        .map_err(|e| AnalysisError::ProcessingError(format!("Image clone failed: {}", e)))?;
+    let mask_cropped = mask_roi.try_clone()
+        .map_err(|e| AnalysisError::ProcessingError(format!("Mask clone failed: {}", e)))?;
+
+    // Create output with masked pixels only (black background for non-mask pixels)
+    let mut fragment = opencv::core::Mat::zeros(image_cropped.rows(), image_cropped.cols(), image_cropped.typ())
+        .map_err(|e| AnalysisError::ProcessingError(format!("Output Mat creation failed: {}", e)))?
+        .to_mat()
+        .map_err(|e| AnalysisError::ProcessingError(format!("Mat conversion failed: {}", e)))?;
+
+    // Copy only the masked pixels
+    image_cropped.copy_to_masked(&mut fragment, &mask_cropped)
+        .map_err(|e| AnalysisError::ProcessingError(format!("Masked copy failed: {}", e)))?;
 
     Ok(fragment)
+}
+
+/// Convert sRGB color to Munsell notation string
+fn srgb_to_munsell_notation(srgb: Srgb) -> String {
+    use munsellspace::MunsellConverter;
+
+    // Convert sRGB [0.0-1.0] to [0-255]
+    let r = (srgb.red * 255.0).round() as u8;
+    let g = (srgb.green * 255.0).round() as u8;
+    let b = (srgb.blue * 255.0).round() as u8;
+
+    // Convert to Munsell using munsellspace
+    match MunsellConverter::new() {
+        Ok(converter) => {
+            match converter.srgb_to_munsell([r, g, b]) {
+                Ok(munsell) => munsell.to_string(),
+                Err(_) => "N/A".to_string(),
+            }
+        }
+        Err(_) => "N/A".to_string(),
+    }
 }
 
 /// Apply EXIF orientation correction to image
@@ -379,12 +427,13 @@ mod tests {
             lch: Lch::new(50.0, 36.06, 303.69),
             srgb: Srgb::new(0.2, 0.4, 0.8),
             hex: "#3366CC".to_string(),
+            munsell: "5PB 5/10".to_string(),
             confidence: 0.85,
         };
 
         let json = serde_json::to_string(&result).unwrap();
         let deserialized: ColorResult = serde_json::from_str(&json).unwrap();
-        
+
         assert_eq!(result, deserialized);
     }
 }
