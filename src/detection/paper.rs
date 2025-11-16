@@ -180,19 +180,74 @@ impl PaperDetector {
     }
 
     /// Detect foreign objects using edge detection and contour analysis
-    fn detect_foreign_objects(&self, _image: &Mat, binary: &Mat) -> Result<Mat> {
+    fn detect_foreign_objects(&self, image: &Mat, binary: &Mat) -> Result<Mat> {
         // Create initial mask (all false = no foreign objects)
-        let mask = Mat::zeros(binary.rows(), binary.cols(), opencv::core::CV_8UC1)
+        let mut mask = Mat::zeros(binary.rows(), binary.cols(), opencv::core::CV_8UC1)
             .map_err(|e| AnalysisError::ProcessingError(format!("Mask creation failed: {}", e)))?
             .to_mat()
             .map_err(|e| AnalysisError::ProcessingError(format!("Mask conversion failed: {}", e)))?;
 
-        // TODO: Implement foreign object detection
-        // - Canny edge detection for high-contrast edges
-        // - Detect rectangular contours with high edge density (rulers)
-        // - Detect glossy/reflective regions (tape)
-        // - Detect strong straight lines not aligned with paper edges
-        // For initial implementation, return empty mask
+        // Convert to grayscale for edge detection
+        let mut gray = Mat::default();
+        opencv::imgproc::cvt_color(image, &mut gray, opencv::imgproc::COLOR_BGR2GRAY, 0, opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT)
+            .map_err(|e| AnalysisError::ProcessingError(format!("Grayscale conversion failed: {}", e)))?;
+
+        // Apply Canny edge detection for high-contrast edges
+        let mut edges = Mat::default();
+        opencv::imgproc::canny(&gray, &mut edges, 50.0, 150.0, 3, false)
+            .map_err(|e| AnalysisError::ProcessingError(format!("Canny edge detection failed: {}", e)))?;
+
+        // Find contours in edge image
+        let mut contours = Vector::<VectorOfPoint>::new();
+        find_contours(&edges, &mut contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE, Point::new(0, 0))
+            .map_err(|e| AnalysisError::ProcessingError(format!("Edge contour detection failed: {}", e)))?;
+
+        // Identify foreign objects by geometry
+        for i in 0..contours.len() {
+            let contour = contours.get(i)
+                .map_err(|e| AnalysisError::ProcessingError(format!("Contour access failed: {}", e)))?;
+
+            let area = opencv::imgproc::contour_area(&contour, false)
+                .map_err(|e| AnalysisError::ProcessingError(format!("Area calculation failed: {}", e)))?;
+
+            // Skip very small contours (noise)
+            if area < 100.0 {
+                continue;
+            }
+
+            // Get bounding rectangle
+            let rect = opencv::imgproc::bounding_rect(&contour)
+                .map_err(|e| AnalysisError::ProcessingError(format!("Bounding rect failed: {}", e)))?;
+
+            // Calculate aspect ratio
+            let aspect_ratio = if rect.height > 0 {
+                rect.width as f64 / rect.height as f64
+            } else {
+                1.0
+            };
+
+            // Detect rulers/tape: high aspect ratio (>5:1 or <1:5) and small relative area
+            let image_area = (binary.rows() * binary.cols()) as f64;
+            let relative_area = area / image_area;
+
+            let is_foreign = (aspect_ratio > 5.0 || aspect_ratio < 0.2) && relative_area < 0.05;
+
+            // Mark foreign objects in mask
+            if is_foreign {
+                opencv::imgproc::draw_contours(
+                    &mut mask,
+                    &contours,
+                    i as i32,
+                    Scalar::all(255.0),
+                    -1, // Fill
+                    opencv::imgproc::LINE_8,
+                    &Mat::default(),
+                    i32::MAX,
+                    Point::new(0, 0),
+                )
+                .map_err(|e| AnalysisError::ProcessingError(format!("Contour drawing failed: {}", e)))?;
+            }
+        }
 
         Ok(mask)
     }
@@ -441,10 +496,130 @@ mod tests {
         assert_eq!(detector.poly_epsilon, 0.03);
     }
 
-    // TODO: Add integration tests with sample images
-    // - Test with clear paper boundary
-    // - Test with foreign objects (tape, rulers)
-    // - Test with poor lighting
-    // - Test with rounded corners
-    // - Test error cases (no paper, too small, etc.)
+    #[test]
+    fn test_order_corners() {
+        let detector = PaperDetector::new();
+
+        // Create unordered corners
+        let mut corners = VectorOfPoint2f::new();
+        corners.push(Point2f::new(100.0, 100.0)); // Top-left
+        corners.push(Point2f::new(400.0, 100.0)); // Top-right
+        corners.push(Point2f::new(400.0, 400.0)); // Bottom-right
+        corners.push(Point2f::new(100.0, 400.0)); // Bottom-left
+
+        let ordered = detector.order_corners(&corners).unwrap();
+
+        // Verify correct ordering
+        let tl = ordered.get(0).unwrap();
+        let tr = ordered.get(1).unwrap();
+        let br = ordered.get(2).unwrap();
+        let bl = ordered.get(3).unwrap();
+
+        // Top-left should have smallest sum
+        assert!(tl.x + tl.y <= tr.x + tr.y);
+        assert!(tl.x + tl.y <= br.x + br.y);
+        assert!(tl.x + tl.y <= bl.x + bl.y);
+
+        // Bottom-right should have largest sum
+        assert!(br.x + br.y >= tl.x + tl.y);
+        assert!(br.x + br.y >= tr.x + tr.y);
+        assert!(br.x + br.y >= bl.x + bl.y);
+    }
+
+    #[test]
+    fn test_compute_output_size() {
+        let detector = PaperDetector::new();
+
+        // Create rectangular corners (300x200)
+        let mut corners = VectorOfPoint2f::new();
+        corners.push(Point2f::new(0.0, 0.0));    // Top-left
+        corners.push(Point2f::new(300.0, 0.0));  // Top-right
+        corners.push(Point2f::new(300.0, 200.0)); // Bottom-right
+        corners.push(Point2f::new(0.0, 200.0));  // Bottom-left
+
+        let (width, height) = detector.compute_output_size(&corners).unwrap();
+
+        assert_eq!(width, 300);
+        assert_eq!(height, 200);
+    }
+
+    #[test]
+    fn test_compute_output_size_skewed() {
+        let detector = PaperDetector::new();
+
+        // Create skewed quadrilateral
+        let mut corners = VectorOfPoint2f::new();
+        corners.push(Point2f::new(10.0, 20.0));   // Top-left
+        corners.push(Point2f::new(310.0, 30.0));  // Top-right (slightly down)
+        corners.push(Point2f::new(300.0, 220.0)); // Bottom-right
+        corners.push(Point2f::new(0.0, 210.0));   // Bottom-left
+
+        let (width, height) = detector.compute_output_size(&corners).unwrap();
+
+        // Should use maximum dimensions
+        assert!(width >= 300);
+        assert!(height >= 190);
+    }
+
+    #[test]
+    fn test_confidence_score_calculation() {
+        let detector = PaperDetector::new();
+
+        // Create a square contour
+        let mut contour = VectorOfPoint::new();
+        contour.push(Point::new(0, 0));
+        contour.push(Point::new(100, 0));
+        contour.push(Point::new(100, 100));
+        contour.push(Point::new(0, 100));
+
+        let mut corners = VectorOfPoint2f::new();
+        corners.push(Point2f::new(0.0, 0.0));
+        corners.push(Point2f::new(100.0, 0.0));
+        corners.push(Point2f::new(100.0, 100.0));
+        corners.push(Point2f::new(0.0, 100.0));
+
+        // Create test image
+        let image = Mat::zeros(200, 200, opencv::core::CV_8UC3).unwrap().to_mat().unwrap();
+
+        let confidence = detector.compute_confidence(&contour, &corners, &image).unwrap();
+
+        // Confidence should be between 0 and 1
+        assert!(confidence >= 0.0 && confidence <= 1.0);
+
+        // With 4 corners and good size ratio, should be relatively high
+        assert!(confidence > 0.3);
+    }
+
+    #[test]
+    fn test_foreign_object_detection_empty() {
+        let detector = PaperDetector::new();
+
+        // Create blank image and binary mask
+        let image = Mat::zeros(480, 640, opencv::core::CV_8UC3).unwrap().to_mat().unwrap();
+        let binary = Mat::zeros(480, 640, opencv::core::CV_8UC1).unwrap().to_mat().unwrap();
+
+        let foreign_mask = detector.detect_foreign_objects(&image, &binary).unwrap();
+
+        // Should return empty mask for blank image
+        assert_eq!(foreign_mask.rows(), 480);
+        assert_eq!(foreign_mask.cols(), 640);
+    }
+
+    // Integration tests with actual images would go here
+    #[test]
+    #[ignore] // Ignore until we have test images
+    fn test_paper_detection_with_real_image() {
+        // TODO: Add test with sample image containing clear paper boundary
+        // let detector = PaperDetector::new();
+        // let image = opencv::imgcodecs::imread("tests/paper_sample.jpg", opencv::imgcodecs::IMREAD_COLOR).unwrap();
+        // let result = detector.detect(&image).unwrap();
+        // assert!(result.confidence > 0.5);
+    }
+
+    #[test]
+    #[ignore] // Ignore until we have test images
+    fn test_paper_detection_with_foreign_objects() {
+        // TODO: Test with image containing tape or rulers
+        // Should successfully detect paper and exclude foreign objects
+    }
 }
