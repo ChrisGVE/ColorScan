@@ -38,4 +38,6 @@ claude.json
 tmp/
 **/LT_*.*
 **/*_temp_*.*
-assets/test_samples/
+
+# Local test sample images (may contain personal data - not for CI)
+/assets/local_test_samples/
