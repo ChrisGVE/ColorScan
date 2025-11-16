@@ -48,6 +48,17 @@ pub struct ColorResult {
     pub confidence: f32,
 }
 
+/// Debug output containing intermediate processing images
+#[derive(Debug, Clone)]
+pub struct DebugOutput {
+    /// White balance corrected rectified image (full card)
+    pub corrected_image: opencv::core::Mat,
+    /// Swatch fragment used for color extraction
+    pub swatch_fragment: opencv::core::Mat,
+    /// Binary mask showing swatch region
+    pub swatch_mask: opencv::core::Mat,
+}
+
 /// Analyze a fountain pen ink swatch from an image file
 ///
 /// This is the main entry point for color analysis. It processes an image
@@ -138,6 +149,153 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
         hex,
         confidence: color_analysis.confidence,
     })
+}
+
+/// Analyze a fountain pen ink swatch with debug output
+///
+/// This function performs the same analysis as `analyze_swatch` but also returns
+/// intermediate processing images for debugging and visualization.
+///
+/// # Arguments
+///
+/// * `image_path` - Path to the image file
+///
+/// # Returns
+///
+/// A tuple of (`ColorResult`, `DebugOutput`) containing color analysis and debug images
+///
+/// # Errors
+///
+/// Returns `AnalysisError` if analysis fails (same as `analyze_swatch`)
+pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutput)> {
+    use crate::exif::extractor::ExifExtractor;
+    use crate::detection::{PaperDetector, SwatchDetector};
+    use crate::calibration::white_balance::WhiteBalanceEstimator;
+    use crate::color::analysis::ColorAnalyzer;
+    use crate::color::conversion::ColorConverter;
+
+    // Step 1: Load image
+    let mut image = opencv::imgcodecs::imread(
+        image_path.to_str().ok_or_else(|| {
+            AnalysisError::ProcessingError("Invalid image path encoding".into())
+        })?,
+        opencv::imgcodecs::IMREAD_COLOR,
+    )
+    .map_err(|e| AnalysisError::image_load("Failed to load image", e))?;
+
+    if image.empty() {
+        return Err(AnalysisError::ProcessingError("Image file is empty or corrupted".into()));
+    }
+
+    // Step 2: Extract EXIF metadata and apply orientation correction
+    let _metadata = ExifExtractor::extract_color_metadata(image_path)
+        .ok(); // Ignore errors, EXIF is optional
+
+    // Apply EXIF orientation correction if available
+    image = apply_exif_orientation(image, image_path)?;
+
+    // Step 3: Detect paper region and rectify perspective
+    let paper_detector = PaperDetector::new();
+    let paper_result = paper_detector.detect(&image)?;
+
+    // Step 4: Estimate white balance from paper region
+    let wb_estimator = WhiteBalanceEstimator::new();
+    let paper_color = wb_estimator.estimate_from_paper(
+        &paper_result.rectified_image,
+        &paper_result.foreign_object_mask,
+    )?;
+
+    // Step 5: Detect ink swatch region
+    let swatch_detector = SwatchDetector::new();
+    let swatch_result = swatch_detector.detect(
+        &paper_result.rectified_image,
+        &paper_result.foreign_object_mask,
+        paper_color,
+    )?;
+
+    // Step 6: Extract representative color from swatch
+    let color_analyzer = ColorAnalyzer::new();
+    let color_analysis = color_analyzer.extract_color(
+        &paper_result.rectified_image,
+        &swatch_result.swatch_mask,
+        paper_color,
+    )?;
+
+    // Step 7: Convert to multiple color spaces
+    let converter = ColorConverter::new();
+    let lch = converter.lab_to_lch(color_analysis.lab);
+    let srgb = converter.lab_to_srgb(color_analysis.lab);
+    let hex = converter.srgb_to_hex(srgb);
+
+    // Step 8: Extract swatch fragment for debug output
+    let swatch_fragment = extract_swatch_fragment(&paper_result.rectified_image, &swatch_result.swatch_mask)?;
+
+    // Step 9: Return results and debug output
+    let color_result = ColorResult {
+        lab: color_analysis.lab,
+        lch,
+        srgb,
+        hex,
+        confidence: color_analysis.confidence,
+    };
+
+    let debug_output = DebugOutput {
+        corrected_image: paper_result.rectified_image,
+        swatch_fragment,
+        swatch_mask: swatch_result.swatch_mask,
+    };
+
+    Ok((color_result, debug_output))
+}
+
+/// Extract the swatch fragment from the rectified image using the mask
+fn extract_swatch_fragment(image: &opencv::core::Mat, mask: &opencv::core::Mat) -> Result<opencv::core::Mat> {
+    // Find bounding rectangle of the swatch region
+    let mut contours = opencv::core::Vector::<opencv::core::Vector<opencv::core::Point>>::new();
+    opencv::imgproc::find_contours(
+        mask,
+        &mut contours,
+        opencv::imgproc::RETR_EXTERNAL,
+        opencv::imgproc::CHAIN_APPROX_SIMPLE,
+        opencv::core::Point::new(0, 0),
+    )
+    .map_err(|e| AnalysisError::ProcessingError(format!("Contour detection failed: {}", e)))?;
+
+    if contours.is_empty() {
+        return Err(AnalysisError::NoSwatchDetected("No swatch region in mask".into()));
+    }
+
+    // Find largest contour by area
+    let mut best_contour_idx = 0;
+    let mut best_area = 0.0;
+
+    for i in 0..contours.len() {
+        let contour = contours.get(i)
+            .map_err(|e| AnalysisError::ProcessingError(format!("Contour access failed: {}", e)))?;
+        let area = opencv::imgproc::contour_area(&contour, false)
+            .map_err(|e| AnalysisError::ProcessingError(format!("Area calculation failed: {}", e)))?;
+
+        if area > best_area {
+            best_area = area;
+            best_contour_idx = i;
+        }
+    }
+
+    // Get bounding rectangle of largest contour
+    let contour = contours.get(best_contour_idx)
+        .map_err(|e| AnalysisError::ProcessingError(format!("Contour access failed: {}", e)))?;
+    let rect = opencv::imgproc::bounding_rect(&contour)
+        .map_err(|e| AnalysisError::ProcessingError(format!("Bounding rect failed: {}", e)))?;
+
+    // Extract ROI (region of interest)
+    let roi = opencv::core::Mat::roi(image, rect)
+        .map_err(|e| AnalysisError::ProcessingError(format!("ROI extraction failed: {}", e)))?;
+
+    // Clone the ROI to create an independent Mat
+    let fragment = roi.try_clone()
+        .map_err(|e| AnalysisError::ProcessingError(format!("Fragment clone failed: {}", e)))?;
+
+    Ok(fragment)
 }
 
 /// Apply EXIF orientation correction to image
