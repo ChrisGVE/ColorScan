@@ -48,6 +48,13 @@ cargo run --example cli photo.jpg
 cargo run --example cli swatch.heic > result.json
 ```
 
+**Note**: The CLI tool (`examples/cli.rs`) is a **development and testing utility only**. It is:
+- Dynamically linked to system OpenCV for fast compile times during development
+- Not intended for distribution to end users
+- Used for validating crate functionality with real images and iterating on algorithms
+
+For production applications, see the Deployment section below.
+
 ## How It Works
 
 1. **Paper Detection**: Locates and rectifies the paper/card surface using computer vision
@@ -180,6 +187,46 @@ match analyze_swatch(path) {
     }
 }
 ```
+
+## Deployment Options
+
+### For Library Users (Recommended)
+
+When using `scan_colors` as a library dependency in your application, you have several OpenCV deployment options:
+
+**1. Dynamic Linking** (Development/Testing)
+- Default configuration - links to system-installed OpenCV
+- Fast compile times, smaller binaries
+- Users must have OpenCV installed on their system
+- Current crate configuration
+
+**2. Static Linking** (Standalone Applications)
+```toml
+[dependencies]
+opencv = { version = "0.95", features = ["static"] }
+```
+- Embeds OpenCV into your application binary
+- Single self-contained executable (~50-100MB)
+- No runtime OpenCV dependency required
+- Ideal for CLI tools distributed to end users
+
+**3. Bundled Libraries** (Desktop Applications)
+- Ship OpenCV dynamic libraries alongside your application
+- Smaller main binary, libraries loaded at runtime
+- Common for macOS .app bundles, Windows installers
+- Platform-specific packaging required
+
+**4. vcpkg Integration** (Reproducible Builds)
+```bash
+vcpkg install opencv4
+export VCPKG_ROOT=/path/to/vcpkg
+cargo build
+```
+- Builds OpenCV as part of your build process
+- Reproducible across development environments
+- opencv-rust has built-in vcpkg support
+
+**Recommendation**: Document OpenCV as a system dependency and let consuming applications choose their deployment strategy based on their distribution requirements.
 
 ## Development Status
 
