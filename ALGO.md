@@ -100,19 +100,19 @@ DECISION POINTS:
 - 1000 pixel minimum chosen for statistical validity
 ```
 
-### Adaptive Paper Detection
+### Adaptive Paper Detection with Foreign Object Exclusion
 
 **Tag**: `algo-adaptive-paper-detection`
 **Created**: 2025-01-19
-**Last Modified**: 2025-01-19
-**Purpose**: Detect and rectify paper/card surface in image using computer vision
+**Last Modified**: 2025-11-16
+**Purpose**: Detect and rectify paper/card surface in image, excluding foreign objects (tape, rulers, weights)
 **Performance Requirements**: <30ms processing time, handle 4000x3000 pixel images
 **Commit**: [TBD - initial implementation]
 
 ```
-ALGORITHM: Adaptive Paper Detection
+ALGORITHM: Adaptive Paper Detection with Foreign Object Exclusion
 INPUT: RGB image from smartphone camera
-OUTPUT: Rectified image, paper contour coordinates, homography matrix
+OUTPUT: Rectified image, paper contour coordinates, homography matrix, foreign object mask
 
 STEPS:
 1. Preprocessing:
@@ -125,24 +125,35 @@ STEPS:
    - Apply local adaptive threshold for uneven lighting
    - Target: detect bright regions (paper) vs darker background
 
-3. Morphological operations:
+3. Foreign object detection and masking:
+   - Detect high-contrast edges using Canny edge detection
+   - Identify non-paper objects (rulers, tape, weights) by:
+     - Rectangular contours with high edge density (rulers)
+     - Glossy/reflective regions (transparent tape, glossy objects)
+     - Strong straight lines not aligned with paper edges
+   - Create binary mask excluding foreign objects from analysis
+   - Assumption: ink swatch itself is not obstructed by transparent materials
+
+4. Morphological operations:
    - Opening operation (kernel size 3x3) to remove noise
    - Closing operation to fill small gaps in paper regions
+   - Exclude masked foreign object regions
 
-4. Contour detection and filtering:
-   - Find all contours in thresholded image
+5. Contour detection and filtering:
+   - Find all contours in thresholded image (excluding foreign objects)
    - Filter by area: minimum 10% of total image area
    - Filter by aspect ratio: approximately rectangular shapes
 
-5. Polygon approximation:
+6. Polygon approximation:
    - Use approxPolyDP with epsilon = 2% of perimeter
    - Select contours with approximately 4 corners
    - Validate corners form near-rectangular shape (angles ~90°)
 
-6. Homography computation and rectification:
+7. Homography computation and rectification:
    - Order corners (top-left, top-right, bottom-right, bottom-left)
    - Compute homography to standard rectangle
    - Apply perspective transform to rectify image
+   - Apply foreign object mask to rectified image
    - Limit maximum rectification angle to 45° to avoid distortion
 
 EDGE CASES:
@@ -150,16 +161,82 @@ EDGE CASES:
 - Rounded corners: allow polygon approximation tolerance
 - Poor lighting: use multiple threshold values and combine results
 - No clear paper boundary: fallback to whole-image analysis
+- Foreign objects at edges: exclude from paper boundary detection
+- Complex holding mechanisms: detect and mask opaque objects
 
 PERFORMANCE OPTIMIZATIONS:
 - Downscale image for detection, upscale coordinates for rectification
 - Use integral images for efficient region analysis
 - Cache morphological kernels
+- Parallel edge detection for foreign objects
 
 DECISION POINTS:
 - User approved 10% minimum area to ensure adequate swatch region
 - 45° maximum rectification angle chosen to preserve image quality
 - Otsu + adaptive combination chosen over single threshold method
+- User requested foreign object exclusion (2025-11-16)
+- Assumption: ink area not obstructed by transparent tape (user guidance)
+```
+
+### Ink Swatch Boundary Detection
+
+**Tag**: `algo-swatch-boundary-detection`
+**Created**: 2025-11-16
+**Last Modified**: 2025-11-16
+**Purpose**: Isolate ink swatch region from paper background, excluding foreign objects
+**Performance Requirements**: <20ms processing time, handle 10-80% swatch area range
+**Commit**: [TBD - initial implementation]
+
+```
+ALGORITHM: Ink Swatch Boundary Detection with Foreign Object Exclusion
+INPUT: Rectified paper image, foreign object mask, estimated paper color
+OUTPUT: Ink swatch binary mask, swatch boundary contour, confidence score
+
+STEPS:
+1. Color-based segmentation:
+   - Convert rectified image to Lab color space
+   - Compute color difference (ΔE) between each pixel and estimated paper color
+   - Threshold by minimum ΔE (default: 15) to separate ink from paper
+   - Apply foreign object mask to exclude non-ink, non-paper regions
+
+2. Morphological refinement:
+   - Opening operation to remove small noise regions
+   - Closing operation to fill holes within swatch
+   - Ensure foreign objects (tape, rulers) are excluded from swatch mask
+
+3. Contour analysis:
+   - Find contours in binary swatch mask
+   - Filter by size: minimum 10%, maximum 80% of paper area
+   - Select largest contour as primary swatch region
+   - Validate swatch is reasonably compact (not highly fragmented)
+
+4. Boundary refinement:
+   - Apply gradient-based edge refinement for precise boundaries
+   - Smooth contour to reduce noise while preserving shape
+   - Erode boundary slightly (1-2 pixels) to avoid edge artifacts
+
+5. Confidence scoring:
+   - High confidence: clear color separation, compact swatch, adequate size
+   - Medium confidence: adequate separation but irregular shape or size issues
+   - Low confidence: poor separation, very small/large swatch, or fragmented
+
+EDGE CASES:
+- Gradient swatches: use color range instead of single threshold
+- Very light inks: lower ΔE threshold, increase sensitivity
+- Multiple ink regions: select largest connected component
+- Foreign objects overlapping edges: exclude from boundary detection
+- Paper tone variations: use local paper color estimation
+
+PERFORMANCE OPTIMIZATIONS:
+- Use integral images for efficient color distance computation
+- Cache Lab conversions for repeated pixel access
+- Parallel processing for independent regions
+
+DECISION POINTS:
+- User requested foreign object exclusion (2025-11-16)
+- Minimum ΔE of 15 chosen for clear ink-paper separation
+- 10-80% area range based on practical fountain pen photography
+- Assumption: ink swatch itself not obstructed by transparent materials
 ```
 
 ### Robust Color Extraction

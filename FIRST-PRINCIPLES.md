@@ -63,16 +63,19 @@
 
 ## Principle 6: Real-World Robustness
 
-**Philosophy**: Handle diverse lighting conditions, paper types, and smartphone camera variations.
+**Philosophy**: Handle diverse lighting conditions, paper types, smartphone camera variations, and practical photography setups.
 
 **Implementation implications**:
 - Support white, cream, and off-white paper backgrounds
 - Handle lighting temperature range: 3000K-6500K
 - Adapt to smartphone camera color matrix variations
+- Detect and exclude foreign objects (tape, rulers, weights) from analysis
+- Assume ink swatch itself is not obstructed by transparent materials
 - Detect and handle gradient saturation in cotton swab swatches
 - Account for ink sheen and shimmer particles where possible
 - Validate against multiple smartphone camera models
 - Provide confidence scores for ambiguous conditions
+- Provide user guidance for optimal photography setup
 
 ## Principle 7: Comprehensive Error Reporting
 
