@@ -137,6 +137,13 @@ fn save_debug_output(debug: &scan_colors::DebugOutput, output_dir: &Path, input_
         .and_then(|s| s.to_str())
         .unwrap_or("output");
 
+    // Save original image (before white balance correction)
+    let original_path = output_dir.join(format!("{}_original.png", base_name));
+    match imgcodecs::imwrite(original_path.to_str().unwrap(), &debug.original_image, &Vector::new()) {
+        Ok(_) => eprintln!("Debug: Saved original image to {}", original_path.display()),
+        Err(e) => eprintln!("Warning: Failed to save original image: {}", e),
+    }
+
     // Save corrected image (white balance applied)
     let corrected_path = output_dir.join(format!("{}_corrected.png", base_name));
     match imgcodecs::imwrite(corrected_path.to_str().unwrap(), &debug.corrected_image, &Vector::new()) {

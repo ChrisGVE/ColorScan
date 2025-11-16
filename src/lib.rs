@@ -46,6 +46,10 @@ pub struct ColorResult {
     pub hex: String,
     /// Munsell color notation (Hue Value/Chroma)
     pub munsell: String,
+    /// ISCC-NBS color name (e.g., "dark purplish blue")
+    pub color_name: String,
+    /// ISCC-NBS tone modifier (e.g., "dark", "vivid")
+    pub tone: String,
     /// Analysis confidence score (0.0 = low, 1.0 = high)
     pub confidence: f32,
 }
@@ -53,6 +57,8 @@ pub struct ColorResult {
 /// Debug output containing intermediate processing images
 #[derive(Debug, Clone)]
 pub struct DebugOutput {
+    /// Original image (before white balance correction, after orientation)
+    pub original_image: opencv::core::Mat,
     /// White balance corrected rectified image (full card)
     pub corrected_image: opencv::core::Mat,
     /// Swatch fragment used for color extraction
@@ -143,8 +149,8 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
     let srgb = converter.lab_to_srgb(color_analysis.lab);
     let hex = converter.srgb_to_hex(srgb);
 
-    // Step 8: Convert to Munsell notation
-    let munsell = srgb_to_munsell_notation(srgb);
+    // Step 8: Convert to Munsell notation and ISCC-NBS color names
+    let (munsell, color_name, tone) = srgb_to_munsell_and_names(srgb);
 
     // Step 9: Return complete result
     Ok(ColorResult {
@@ -153,6 +159,8 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
         srgb,
         hex,
         munsell,
+        color_name,
+        tone,
         confidence: color_analysis.confidence,
     })
 }
@@ -200,6 +208,9 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
     // Apply EXIF orientation correction if available
     image = apply_exif_orientation(image, image_path)?;
 
+    // Clone original image for debug output (after orientation, before processing)
+    let original_image = image.clone();
+
     // Step 3: Detect paper region and rectify perspective
     let paper_detector = PaperDetector::new();
     let paper_result = paper_detector.detect(&image)?;
@@ -233,8 +244,8 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
     let srgb = converter.lab_to_srgb(color_analysis.lab);
     let hex = converter.srgb_to_hex(srgb);
 
-    // Step 8: Convert to Munsell notation
-    let munsell = srgb_to_munsell_notation(srgb);
+    // Step 8: Convert to Munsell notation and ISCC-NBS color names
+    let (munsell, color_name, tone) = srgb_to_munsell_and_names(srgb);
 
     // Step 9: Extract swatch fragment for debug output
     let swatch_fragment = extract_swatch_fragment(&paper_result.rectified_image, &swatch_result.swatch_mask)?;
@@ -246,10 +257,13 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
         srgb,
         hex,
         munsell,
+        color_name,
+        tone,
         confidence: color_analysis.confidence,
     };
 
     let debug_output = DebugOutput {
+        original_image,
         corrected_image: paper_result.rectified_image,
         swatch_fragment,
         swatch_mask: swatch_result.swatch_mask,
@@ -325,9 +339,11 @@ fn extract_swatch_fragment(image: &opencv::core::Mat, mask: &opencv::core::Mat) 
     Ok(fragment)
 }
 
-/// Convert sRGB color to Munsell notation string
-fn srgb_to_munsell_notation(srgb: Srgb) -> String {
-    use munsellspace::MunsellConverter;
+/// Convert sRGB color to Munsell notation and ISCC-NBS color names
+///
+/// Returns (munsell_notation, color_name, tone)
+fn srgb_to_munsell_and_names(srgb: Srgb) -> (String, String, String) {
+    use munsellspace::{MunsellConverter, IsccNbsClassifier};
 
     // Convert sRGB [0.0-1.0] to [0-255]
     let r = (srgb.red * 255.0).round() as u8;
@@ -335,14 +351,37 @@ fn srgb_to_munsell_notation(srgb: Srgb) -> String {
     let b = (srgb.blue * 255.0).round() as u8;
 
     // Convert to Munsell using munsellspace
-    match MunsellConverter::new() {
-        Ok(converter) => {
-            match converter.srgb_to_munsell([r, g, b]) {
-                Ok(munsell) => munsell.to_string(),
-                Err(_) => "N/A".to_string(),
-            }
+    let munsell_result = MunsellConverter::new()
+        .and_then(|converter| converter.srgb_to_munsell([r, g, b]));
+
+    match munsell_result {
+        Ok(munsell_color) => {
+            let munsell_str = munsell_color.to_string();
+
+            // Try to get ISCC-NBS classification
+            // munsell_color.hue is Option<String>, value is f64, chroma is Option<f64>
+            let (color_name, tone) = match (&munsell_color.hue, munsell_color.chroma) {
+                (Some(hue), Some(chroma)) => {
+                    IsccNbsClassifier::new()
+                        .ok()
+                        .and_then(|classifier| {
+                            classifier.classify_munsell(hue.as_str(), munsell_color.value, chroma).ok()
+                        })
+                        .flatten()
+                        .map(|metadata| {
+                            // ColorMetadata has iscc_nbs_descriptor() and alt_color_descriptor()
+                            let primary_name = metadata.iscc_nbs_descriptor();
+                            let alt_name = metadata.alt_color_descriptor();
+                            (primary_name, alt_name)
+                        })
+                        .unwrap_or_else(|| ("N/A".to_string(), "N/A".to_string()))
+                }
+                _ => ("N/A".to_string(), "N/A".to_string()),
+            };
+
+            (munsell_str, color_name, tone)
         }
-        Err(_) => "N/A".to_string(),
+        Err(_) => ("N/A".to_string(), "N/A".to_string(), "N/A".to_string()),
     }
 }
 
@@ -428,6 +467,8 @@ mod tests {
             srgb: Srgb::new(0.2, 0.4, 0.8),
             hex: "#3366CC".to_string(),
             munsell: "5PB 5/10".to_string(),
+            color_name: "vivid blue".to_string(),
+            tone: "vivid".to_string(),
             confidence: 0.85,
         };
 
