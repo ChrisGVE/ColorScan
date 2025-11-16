@@ -22,6 +22,19 @@ node_modules/
 # OS specific
 .DS_Store
 
-# Task files
-# tasks.json
-# tasks/ 
+# Project management files (local only)
+CLAUDE.md
+CLAUDE.local.md
+claude.json
+.claude/
+
+# Task-master files (local only)
+.taskmaster/docs/
+.taskmaster/state.json
+.taskmaster/config.json
+.taskmaster/reports/
+
+# Temporary files (never commit)
+tmp/
+**/LT_*.*
+**/*_temp_*.*
