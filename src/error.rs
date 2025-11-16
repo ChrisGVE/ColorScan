@@ -48,8 +48,8 @@ pub enum AnalysisError {
     ColorConversionError { message: String },
 
     /// Generic processing error
-    #[error("Processing error: {message}")]
-    ProcessingError { message: String },
+    #[error("Processing error: {0}")]
+    ProcessingError(String),
 
     /// Invalid input parameters
     #[error("Invalid parameter: {parameter} = {value}")]
@@ -70,6 +70,23 @@ pub enum AnalysisError {
         duration_ms: u64,
         limit_ms: u64,
     },
+
+    /// No swatch detected in image
+    #[error("No swatch detected: {0}")]
+    NoSwatchDetected(String),
+
+    /// Swatch too small for analysis
+    #[error("Swatch too small: {0}")]
+    SwatchTooSmall(String),
+}
+
+impl From<opencv::Error> for AnalysisError {
+    fn from(error: opencv::Error) -> Self {
+        Self::OpenCvError {
+            operation: "OpenCV operation".to_string(),
+            source: Some(error),
+        }
+    }
 }
 
 impl AnalysisError {

@@ -3,32 +3,16 @@
 //! This module contains compile-time constants for color calibration,
 //! based on industry standards and research findings.
 
-use palette::{Lab, Xyz};
-
 /// D65 Standard Illuminant Reference
 ///
 /// CIE Standard Illuminant D65 represents average daylight with a correlated
 /// color temperature of 6504K. This is the standard reference for digital
 /// images and computer displays.
 pub mod d65 {
-    use super::*;
-
-    /// D65 white point in CIE XYZ color space
+    /// D65 white point in CIE XYZ color space (array form)
     /// Source: CIE 15:2004 Colorimetry, 3rd edition
-    pub const WHITE_POINT_XYZ: Xyz = Xyz {
-        x: 0.95047,
-        y: 1.00000,
-        z: 1.08883,
-        standard: std::marker::PhantomData,
-    };
-
-    /// D65 white point in CIE Lab color space (perfect white)
-    pub const WHITE_POINT_LAB: Lab = Lab {
-        l: 100.0,
-        a: 0.0,
-        b: 0.0,
-        standard: std::marker::PhantomData,
-    };
+    /// Note: palette crate doesn't support const XYZ, so we use array
+    pub const WHITE_POINT_XYZ: [f32; 3] = [0.95047, 1.00000, 1.08883];
 
     /// Correlated Color Temperature of D65 in Kelvin
     pub const CCT_KELVIN: f32 = 6504.0;
@@ -37,6 +21,9 @@ pub mod d65 {
     pub const CHROMATICITY_X: f32 = 0.31271;
     pub const CHROMATICITY_Y: f32 = 0.32902;
 }
+
+/// Re-export D65 white point at top level for convenience
+pub const D65_WHITE_POINT_XYZ: [f32; 3] = d65::WHITE_POINT_XYZ;
 
 /// Color analysis thresholds and limits
 pub mod thresholds {
@@ -149,14 +136,9 @@ mod tests {
     #[test]
     fn test_d65_constants() {
         // Verify D65 white point values match CIE standards
-        assert!((d65::WHITE_POINT_XYZ.x - 0.95047).abs() < 1e-5);
-        assert!((d65::WHITE_POINT_XYZ.y - 1.00000).abs() < 1e-5);
-        assert!((d65::WHITE_POINT_XYZ.z - 1.08883).abs() < 1e-5);
-        
-        // Verify Lab white point
-        assert_eq!(d65::WHITE_POINT_LAB.l, 100.0);
-        assert_eq!(d65::WHITE_POINT_LAB.a, 0.0);
-        assert_eq!(d65::WHITE_POINT_LAB.b, 0.0);
+        assert!((d65::WHITE_POINT_XYZ[0] - 0.95047).abs() < 1e-5);
+        assert!((d65::WHITE_POINT_XYZ[1] - 1.00000).abs() < 1e-5);
+        assert!((d65::WHITE_POINT_XYZ[2] - 1.08883).abs() < 1e-5);
     }
 
     #[test]

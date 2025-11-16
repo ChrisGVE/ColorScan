@@ -137,7 +137,7 @@ impl ColorAnalyzer {
     fn extract_lab_pixels(&self, image: &Mat, mask: &Mat) -> Result<Vec<Lab>> {
         // Convert image to Lab
         let mut lab_image = Mat::default();
-        cvt_color(image, &mut lab_image, COLOR_BGR2Lab, 0)
+        cvt_color(image, &mut lab_image, COLOR_BGR2Lab, 0, opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT)
             .map_err(|e| AnalysisError::ProcessingError(format!("Lab conversion failed: {}", e)))?;
 
         let mut pixels = Vec::new();
@@ -301,7 +301,7 @@ impl ColorAnalyzer {
         };
 
         // Weighted combination
-        let confidence = 0.4 * size_score + 0.3 * variance_score + 0.3 * separation_score;
+        let confidence: f32 = 0.4 * size_score + 0.3 * variance_score + 0.3 * separation_score;
 
         Ok(confidence.clamp(0.0, 1.0))
     }

@@ -16,10 +16,12 @@ use opencv::{
         cvt_color, COLOR_BGR2Lab,
     },
     prelude::*,
-    types::VectorOfPoint,
 };
-use palette::{Lab, Srgb};
+use palette::Lab;
 use crate::{AnalysisError, Result};
+
+// Type alias for OpenCV vector type
+type VectorOfPoint = Vector<Point>;
 
 /// Minimum color difference (ΔE) to separate ink from paper
 const MIN_DELTA_E: f64 = 15.0;
@@ -132,7 +134,7 @@ impl SwatchDetector {
     fn segment_by_color(&self, image: &Mat, paper_color: Lab) -> Result<Mat> {
         // Convert image to Lab
         let mut lab_image = Mat::default();
-        cvt_color(image, &mut lab_image, COLOR_BGR2Lab, 0)
+        cvt_color(image, &mut lab_image, COLOR_BGR2Lab, 0, opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT)
             .map_err(|e| AnalysisError::ProcessingError(format!("Lab conversion failed: {}", e)))?;
 
         // Create binary mask based on color difference

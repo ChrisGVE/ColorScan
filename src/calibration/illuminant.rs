@@ -59,7 +59,7 @@ impl IlluminantEstimator {
         Illuminant {
             chromaticity: (d65::CHROMATICITY_X, d65::CHROMATICITY_Y),
             cct_kelvin: d65::CCT_KELVIN,
-            white_point: d65::WHITE_POINT_XYZ,
+            white_point: Xyz::new(d65::WHITE_POINT_XYZ[0], d65::WHITE_POINT_XYZ[1], d65::WHITE_POINT_XYZ[2]),
         }
     }
 
@@ -113,7 +113,8 @@ impl IlluminantEstimator {
     ///
     /// Color adapted to D65 illuminant
     pub fn adapt_to_d65(lab_color: Lab, source_illuminant: &Illuminant) -> Result<Lab> {
-        if source_illuminant.white_point == d65::WHITE_POINT_XYZ {
+        let d65_white = Xyz::new(d65::WHITE_POINT_XYZ[0], d65::WHITE_POINT_XYZ[1], d65::WHITE_POINT_XYZ[2]);
+        if source_illuminant.white_point == d65_white {
             // Already under D65, no adaptation needed
             return Ok(lab_color);
         }

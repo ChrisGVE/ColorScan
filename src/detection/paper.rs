@@ -9,7 +9,7 @@
 //! Algorithm tag: `algo-adaptive-paper-detection`
 
 use opencv::{
-    core::{Mat, Point2f, Scalar, Size, Vector, BORDER_CONSTANT},
+    core::{Mat, Point2f, Point, Scalar, Size, Vector, BORDER_CONSTANT},
     imgproc::{
         approx_poly_dp, arc_length, canny, find_contours, get_perspective_transform,
         warp_perspective, cvt_color, gaussian_blur, threshold, morphology_ex,
@@ -17,9 +17,12 @@ use opencv::{
         THRESH_BINARY, THRESH_OTSU, COLOR_BGR2Lab,
     },
     prelude::*,
-    types::{VectorOfPoint, VectorOfPoint2f},
 };
 use crate::{AnalysisError, Result};
+
+// Type aliases for OpenCV vector types
+type VectorOfPoint = Vector<Point>;
+type VectorOfPoint2f = Vector<Point2f>;
 
 /// Minimum paper area as fraction of total image (10%)
 const MIN_PAPER_AREA_RATIO: f64 = 0.10;
@@ -140,7 +143,7 @@ impl PaperDetector {
     /// Preprocess image: convert to Lab and blur
     fn preprocess(&self, image: &Mat) -> Result<Mat> {
         let mut lab = Mat::default();
-        cvt_color(image, &mut lab, COLOR_BGR2Lab, 0)
+        cvt_color(image, &mut lab, COLOR_BGR2Lab, 0, opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT)
             .map_err(|e| AnalysisError::ProcessingError(format!("Lab conversion failed: {}", e)))?;
 
         let mut blurred = Mat::default();
@@ -151,6 +154,7 @@ impl PaperDetector {
             BLUR_SIGMA,
             BLUR_SIGMA,
             BORDER_CONSTANT,
+            opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT,
         )
         .map_err(|e| AnalysisError::ProcessingError(format!("Gaussian blur failed: {}", e)))?;
 
