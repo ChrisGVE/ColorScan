@@ -222,20 +222,26 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
         &paper_result.foreign_object_mask,
     )?;
 
-    // Step 5: Detect ink swatch region
+    // Step 4b: Apply white balance correction
+    let corrected_image = wb_estimator.apply_correction(&paper_result.rectified_image, paper_color)?;
+
+    // After white balance correction, paper should be neutral white under D65
+    let corrected_paper_color = Lab::new(95.0, 0.0, 0.0);
+
+    // Step 5: Detect ink swatch region (using corrected image and corrected paper color)
     let swatch_detector = SwatchDetector::new();
     let swatch_result = swatch_detector.detect(
-        &paper_result.rectified_image,
+        &corrected_image,
         &paper_result.foreign_object_mask,
-        paper_color,
+        corrected_paper_color,
     )?;
 
-    // Step 6: Extract representative color from swatch
+    // Step 6: Extract representative color from swatch (using corrected image and corrected paper color)
     let color_analyzer = ColorAnalyzer::new();
     let color_analysis = color_analyzer.extract_color(
-        &paper_result.rectified_image,
+        &corrected_image,
         &swatch_result.swatch_mask,
-        paper_color,
+        corrected_paper_color,
     )?;
 
     // Step 7: Convert to multiple color spaces
@@ -247,8 +253,8 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
     // Step 8: Convert to Munsell notation and ISCC-NBS color names
     let (munsell, color_name, tone) = srgb_to_munsell_and_names(srgb);
 
-    // Step 9: Extract swatch fragment for debug output
-    let swatch_fragment = extract_swatch_fragment(&paper_result.rectified_image, &swatch_result.swatch_mask)?;
+    // Step 9: Extract swatch fragment for debug output (using corrected image)
+    let swatch_fragment = extract_swatch_fragment(&corrected_image, &swatch_result.swatch_mask)?;
 
     // Step 10: Return results and debug output
     let color_result = ColorResult {
@@ -264,7 +270,7 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
 
     let debug_output = DebugOutput {
         original_image,
-        corrected_image: paper_result.rectified_image,
+        corrected_image,
         swatch_fragment,
         swatch_mask: swatch_result.swatch_mask,
     };

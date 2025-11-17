@@ -112,6 +112,84 @@ impl WhiteBalanceEstimator {
 
         Ok(lab)
     }
+
+    /// Apply white balance correction to an image
+    ///
+    /// Corrects image colors from estimated illuminant to D65 standard.
+    /// Uses a simple chromatic adaptation approach.
+    ///
+    /// # Arguments
+    ///
+    /// * `image` - Input BGR image to correct
+    /// * `paper_color` - Estimated paper color under current illuminant
+    ///
+    /// # Returns
+    ///
+    /// White balance corrected BGR image
+    pub fn apply_correction(&self, image: &Mat, paper_color: Lab<D65>) -> Result<Mat> {
+        // Target paper color under D65 (assumed to be neutral white)
+        // L* around 95 (very light), a* and b* near 0 (neutral)
+        let target_paper: Lab<D65> = Lab::new(95.0, 0.0, 0.0);
+
+        // Compute correction offsets in Lab space
+        let delta_l = target_paper.l - paper_color.l;
+        let delta_a = target_paper.a - paper_color.a;
+        let delta_b = target_paper.b - paper_color.b;
+
+        // Convert image to Lab
+        let mut lab_image = Mat::default();
+        opencv::imgproc::cvt_color(
+            image,
+            &mut lab_image,
+            opencv::imgproc::COLOR_BGR2Lab,
+            0,
+            opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT,
+        )
+        .map_err(|e| AnalysisError::ProcessingError(format!("Lab conversion failed: {}", e)))?;
+
+        // Create corrected Lab image
+        let mut corrected_lab = lab_image.clone();
+
+        // Apply corrections to each pixel
+        for row in 0..image.rows() {
+            for col in 0..image.cols() {
+                let pixel = lab_image.at_2d::<opencv::core::Vec3b>(row, col)
+                    .map_err(|e| AnalysisError::ProcessingError(format!("Pixel access failed: {}", e)))?;
+
+                // Convert from OpenCV Lab [0-255] to palette Lab
+                let l = (pixel[0] as f32) * 100.0 / 255.0;
+                let a = (pixel[1] as f32) - 128.0;
+                let b = (pixel[2] as f32) - 128.0;
+
+                // Apply correction
+                let corrected_l = (l + delta_l).clamp(0.0, 100.0);
+                let corrected_a = (a + delta_a).clamp(-128.0, 127.0);
+                let corrected_b = (b + delta_b).clamp(-128.0, 127.0);
+
+                // Convert back to OpenCV Lab [0-255]
+                let opencv_l = (corrected_l * 255.0 / 100.0).round() as u8;
+                let opencv_a = (corrected_a + 128.0).round() as u8;
+                let opencv_b = (corrected_b + 128.0).round() as u8;
+
+                *corrected_lab.at_2d_mut::<opencv::core::Vec3b>(row, col)
+                    .map_err(|e| AnalysisError::ProcessingError(format!("Pixel write failed: {}", e)))? =
+                    opencv::core::Vec3b::from([opencv_l, opencv_a, opencv_b]);
+            }
+        }
+
+        // Convert back to BGR
+        let mut corrected_bgr = Mat::default();
+        opencv::imgproc::cvt_color(
+            &corrected_lab,
+            &mut corrected_bgr,
+            opencv::imgproc::COLOR_Lab2BGR,
+            0,
+            opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT,
+        )
+        .map_err(|e| AnalysisError::ProcessingError(format!("BGR conversion failed: {}", e)))?;
+
+        Ok(corrected_bgr)
+    }
 }
 
 impl Default for WhiteBalanceEstimator {

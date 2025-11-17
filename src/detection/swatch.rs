@@ -32,7 +32,7 @@ const MIN_SWATCH_AREA_RATIO: f64 = 0.10;
 /// Maximum swatch area as fraction of paper area (80%)
 const MAX_SWATCH_AREA_RATIO: f64 = 0.80;
 
-/// Morphological kernel size
+/// Morphological kernel size for noise removal (larger = more aggressive)
 const MORPH_KERNEL_SIZE: i32 = 3;
 
 /// Boundary erosion size (pixels)
