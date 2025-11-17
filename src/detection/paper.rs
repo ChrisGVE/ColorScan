@@ -23,8 +23,8 @@ use crate::{AnalysisError, Result};
 type VectorOfPoint = Vector<Point>;
 type VectorOfPoint2f = Vector<Point2f>;
 
-/// Minimum paper area as fraction of total image (10%)
-const MIN_PAPER_AREA_RATIO: f64 = 0.10;
+/// Minimum paper area as fraction of total image (5% - lowered to handle cards with less contrast)
+const MIN_PAPER_AREA_RATIO: f64 = 0.05;
 
 /// Maximum rectification angle in degrees (45°)
 const MAX_RECTIFICATION_ANGLE: f64 = 45.0;
@@ -109,8 +109,15 @@ impl PaperDetector {
         // Step 1: Edge detection to find card boundary
         let edges = self.detect_edges(image)?;
 
-        // Step 2: Find paper contour from edges
-        let paper_contour = self.find_paper_contour_from_edges(&edges, image)?;
+        // Step 2: Find paper contour from edges (with fallback to whole image)
+        // Fallback handles low-contrast cards that fill the frame but don't have clear edges
+        let paper_contour = match self.find_paper_contour_from_edges(&edges, image) {
+            Ok(contour) => contour,
+            Err(_) => {
+                // Fallback: create contour for entire image
+                self.create_whole_image_contour(image)?
+            }
+        };
 
         // Step 3: Foreign object detection (simplified - uses color analysis)
         let foreign_mask = self.detect_foreign_objects_simple(image)?;
@@ -157,8 +164,9 @@ impl PaperDetector {
         .map_err(|e| AnalysisError::ProcessingError(format!("Gaussian blur failed: {}", e)))?;
 
         // Apply Canny edge detection
+        // Using lower thresholds (30, 90) to detect weaker edges for low-contrast cards
         let mut edges = Mat::default();
-        opencv::imgproc::canny(&blurred, &mut edges, 50.0, 150.0, 3, false)
+        opencv::imgproc::canny(&blurred, &mut edges, 30.0, 90.0, 3, false)
             .map_err(|e| AnalysisError::ProcessingError(format!("Canny edge detection failed: {}", e)))?;
 
         // Dilate edges to close gaps
@@ -258,11 +266,26 @@ impl PaperDetector {
             }
         }
 
+        // If no contour found, return error (will trigger fallback in detect())
         best_contour.ok_or_else(|| {
             AnalysisError::NoSwatchDetected(
                 format!("No rectangular paper region found (minimum {}% of image area required)", self.min_area_ratio * 100.0)
             )
         })
+    }
+
+    /// Create a contour representing the entire image (fallback for low-contrast cards)
+    fn create_whole_image_contour(&self, image: &Mat) -> Result<VectorOfPoint> {
+        let width = image.cols();
+        let height = image.rows();
+
+        let mut contour = VectorOfPoint::new();
+        contour.push(Point::new(0, 0));
+        contour.push(Point::new(width - 1, 0));
+        contour.push(Point::new(width - 1, height - 1));
+        contour.push(Point::new(0, height - 1));
+
+        Ok(contour)
     }
 
     /// Simplified foreign object detection

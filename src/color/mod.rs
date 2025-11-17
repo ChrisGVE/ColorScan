@@ -7,4 +7,4 @@ pub mod conversion;
 pub mod analysis;
 
 pub use conversion::ColorConverter;
-pub use analysis::ColorAnalyzer;
+pub use analysis::{ColorAnalyzer, ExtractionMethod};

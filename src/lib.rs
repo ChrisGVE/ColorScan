@@ -67,6 +67,102 @@ pub struct DebugOutput {
     pub swatch_mask: opencv::core::Mat,
 }
 
+/// Analyze a fountain pen ink swatch with a specified extraction method
+///
+/// This function is the same as `analyze_swatch` but allows specifying
+/// the color extraction method for comparison and experimentation.
+///
+/// # Arguments
+///
+/// * `image_path` - Path to the image file
+/// * `method` - Color extraction method to use
+///
+/// # Returns
+///
+/// `ColorResult` containing the extracted color in multiple representations
+pub fn analyze_swatch_with_method(image_path: &Path, method: crate::color::ExtractionMethod) -> Result<ColorResult> {
+    use crate::exif::extractor::ExifExtractor;
+    use crate::detection::{PaperDetector, SwatchDetector};
+    use crate::calibration::white_balance::WhiteBalanceEstimator;
+    use crate::color::analysis::ColorAnalyzer;
+    use crate::color::conversion::ColorConverter;
+
+    // Step 1: Load image
+    let mut image = opencv::imgcodecs::imread(
+        image_path.to_str().ok_or_else(|| {
+            AnalysisError::ProcessingError("Invalid image path encoding".into())
+        })?,
+        opencv::imgcodecs::IMREAD_COLOR,
+    )
+    .map_err(|e| AnalysisError::image_load("Failed to load image", e))?;
+
+    if image.empty() {
+        return Err(AnalysisError::ProcessingError("Image file is empty or corrupted".into()));
+    }
+
+    // Step 2: Extract EXIF metadata and apply orientation correction
+    let _metadata = ExifExtractor::extract_color_metadata(image_path)
+        .ok(); // Ignore errors, EXIF is optional
+
+    // Apply EXIF orientation correction if available
+    image = apply_exif_orientation(image, image_path)?;
+
+    // Step 3: Detect paper region and rectify perspective
+    let paper_detector = PaperDetector::new();
+    let paper_result = paper_detector.detect(&image)?;
+
+    // Step 4: Estimate white balance from paper region
+    let wb_estimator = WhiteBalanceEstimator::new();
+    let paper_color = wb_estimator.estimate_from_paper(
+        &paper_result.rectified_image,
+        &paper_result.foreign_object_mask,
+    )?;
+
+    // Step 4b: Apply white balance correction
+    let corrected_image = wb_estimator.apply_correction(&paper_result.rectified_image, paper_color)?;
+
+    // After white balance correction, paper should be neutral white under D65
+    let corrected_paper_color = Lab::new(95.0, 0.0, 0.0);
+
+    // Step 5: Detect ink swatch region (using corrected image and corrected paper color)
+    let swatch_detector = SwatchDetector::new();
+    let swatch_result = swatch_detector.detect(
+        &corrected_image,
+        &paper_result.foreign_object_mask,
+        corrected_paper_color,
+    )?;
+
+    // Step 6: Extract representative color from swatch using specified method
+    let color_analyzer = ColorAnalyzer::new();
+    let color_analysis = color_analyzer.extract_color(
+        &corrected_image,
+        &swatch_result.swatch_mask,
+        corrected_paper_color,
+        method,
+    )?;
+
+    // Step 7: Convert to multiple color spaces
+    let converter = ColorConverter::new();
+    let lch = converter.lab_to_lch(color_analysis.lab);
+    let srgb = converter.lab_to_srgb(color_analysis.lab);
+    let hex = converter.srgb_to_hex(srgb);
+
+    // Step 8: Convert to Munsell notation and ISCC-NBS color names
+    let (munsell, color_name, tone) = srgb_to_munsell_and_names(srgb);
+
+    // Step 9: Return complete result
+    Ok(ColorResult {
+        lab: color_analysis.lab,
+        lch,
+        srgb,
+        hex,
+        munsell,
+        color_name,
+        tone,
+        confidence: color_analysis.confidence,
+    })
+}
+
 /// Analyze a fountain pen ink swatch from an image file
 ///
 /// This is the main entry point for color analysis. It processes an image
@@ -127,20 +223,27 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
         &paper_result.foreign_object_mask,
     )?;
 
-    // Step 5: Detect ink swatch region
+    // Step 4b: Apply white balance correction
+    let corrected_image = wb_estimator.apply_correction(&paper_result.rectified_image, paper_color)?;
+
+    // After white balance correction, paper should be neutral white under D65
+    let corrected_paper_color = Lab::new(95.0, 0.0, 0.0);
+
+    // Step 5: Detect ink swatch region (using corrected image and corrected paper color)
     let swatch_detector = SwatchDetector::new();
     let swatch_result = swatch_detector.detect(
-        &paper_result.rectified_image,
+        &corrected_image,
         &paper_result.foreign_object_mask,
-        paper_color,
+        corrected_paper_color,
     )?;
 
-    // Step 6: Extract representative color from swatch
+    // Step 6: Extract representative color from swatch (using corrected image and corrected paper color)
     let color_analyzer = ColorAnalyzer::new();
     let color_analysis = color_analyzer.extract_color(
-        &paper_result.rectified_image,
+        &corrected_image,
         &swatch_result.swatch_mask,
-        paper_color,
+        corrected_paper_color,
+        crate::color::ExtractionMethod::MedianMean,
     )?;
 
     // Step 7: Convert to multiple color spaces
@@ -242,6 +345,7 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
         &corrected_image,
         &swatch_result.swatch_mask,
         corrected_paper_color,
+        crate::color::ExtractionMethod::MedianMean,
     )?;
 
     // Step 7: Convert to multiple color spaces

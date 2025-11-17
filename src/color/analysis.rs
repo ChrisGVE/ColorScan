@@ -19,6 +19,19 @@ const MIN_INK_DELTA_E: f32 = 15.0;
 const OUTLIER_PERCENTILE_LOW: f32 = 15.0;
 const OUTLIER_PERCENTILE_HIGH: f32 = 85.0;
 
+/// Color extraction method
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractionMethod {
+    /// Current method: Median L*, Mean a*/b* on 15-85 percentile (baseline)
+    MedianMean,
+    /// Darkest pixels: 10-25 percentile L* (concentrated/wet ink)
+    Darkest,
+    /// Most saturated pixels: Highest chroma (true ink color)
+    MostSaturated,
+    /// Mode: Most frequent color (dominant color)
+    Mode,
+}
+
 /// Color analysis result with statistics
 #[derive(Debug, Clone)]
 pub struct ColorAnalysisResult {
@@ -30,6 +43,8 @@ pub struct ColorAnalysisResult {
     pub pixel_count: usize,
     /// Confidence score (0.0-1.0)
     pub confidence: f32,
+    /// Extraction method used
+    pub method: ExtractionMethod,
 }
 
 /// Color analyzer implementing robust color extraction
@@ -74,6 +89,7 @@ impl ColorAnalyzer {
     /// * `image` - BGR image of ink swatch
     /// * `mask` - Binary mask of ink region (true = ink)
     /// * `paper_color` - Estimated paper color in Lab space
+    /// * `method` - Extraction method to use
     ///
     /// # Returns
     ///
@@ -90,6 +106,7 @@ impl ColorAnalyzer {
         image: &Mat,
         mask: &Mat,
         paper_color: Lab,
+        method: ExtractionMethod,
     ) -> Result<ColorAnalysisResult> {
         // Step 1: Extract ink pixels
         let lab_pixels = self.extract_lab_pixels(image, mask)?;
@@ -110,8 +127,8 @@ impl ColorAnalyzer {
         // Step 3: Transparency handling (simplified - use filtered pixels directly)
         // TODO: Implement full ink-paper mixing model when needed
 
-        // Step 4: Statistical aggregation
-        let representative_color = self.compute_representative_color(&filtered_pixels)?;
+        // Step 4: Statistical aggregation using specified method
+        let representative_color = self.compute_representative_color(&filtered_pixels, method)?;
 
         // Step 5: Validation
         self.validate_ink_color(representative_color, paper_color)?;
@@ -130,6 +147,7 @@ impl ColorAnalyzer {
             variance,
             pixel_count: filtered_pixels.len(),
             confidence,
+            method,
         })
     }
 
@@ -205,12 +223,22 @@ impl ColorAnalyzer {
         Ok(filtered)
     }
 
-    /// Compute representative color using robust statistics
-    fn compute_representative_color(&self, pixels: &[Lab]) -> Result<Lab> {
+    /// Compute representative color using specified extraction method
+    fn compute_representative_color(&self, pixels: &[Lab], method: ExtractionMethod) -> Result<Lab> {
         if pixels.is_empty() {
             return Err(AnalysisError::ProcessingError("No pixels to analyze".into()));
         }
 
+        match method {
+            ExtractionMethod::MedianMean => self.method_median_mean(pixels),
+            ExtractionMethod::Darkest => self.method_darkest(pixels),
+            ExtractionMethod::MostSaturated => self.method_most_saturated(pixels),
+            ExtractionMethod::Mode => self.method_mode(pixels),
+        }
+    }
+
+    /// Method 1: Median L*, Mean a*/b* (baseline - current method)
+    fn method_median_mean(&self, pixels: &[Lab]) -> Result<Lab> {
         // Use median for L* (lightness) to handle specular effects
         let mut l_values: Vec<f32> = pixels.iter().map(|p| p.l).collect();
         l_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -221,6 +249,107 @@ impl ColorAnalyzer {
         let b_mean: f32 = pixels.iter().map(|p| p.b).sum::<f32>() / pixels.len() as f32;
 
         Ok(Lab::new(l_median, a_mean, b_mean))
+    }
+
+    /// Method 2: Darkest pixels (10-25 percentile L*)
+    /// Represents concentrated/wet ink - the truest ink color
+    fn method_darkest(&self, pixels: &[Lab]) -> Result<Lab> {
+        // Sort by lightness
+        let mut sorted: Vec<Lab> = pixels.to_vec();
+        sorted.sort_by(|a, b| a.l.partial_cmp(&b.l).unwrap());
+
+        // Take 10-25 percentile (darkest quarter excluding extreme outliers)
+        let low_idx = (sorted.len() as f32 * 0.10) as usize;
+        let high_idx = (sorted.len() as f32 * 0.25) as usize;
+        let darkest_pixels = &sorted[low_idx..high_idx];
+
+        if darkest_pixels.is_empty() {
+            return self.method_median_mean(pixels); // Fallback
+        }
+
+        // Median L*, Mean a*/b* of darkest pixels
+        let mut l_values: Vec<f32> = darkest_pixels.iter().map(|p| p.l).collect();
+        l_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let l_median = l_values[l_values.len() / 2];
+
+        let a_mean: f32 = darkest_pixels.iter().map(|p| p.a).sum::<f32>() / darkest_pixels.len() as f32;
+        let b_mean: f32 = darkest_pixels.iter().map(|p| p.b).sum::<f32>() / darkest_pixels.len() as f32;
+
+        Ok(Lab::new(l_median, a_mean, b_mean))
+    }
+
+    /// Method 3: Most saturated pixels (highest chroma)
+    /// Represents the truest ink color regardless of concentration
+    fn method_most_saturated(&self, pixels: &[Lab]) -> Result<Lab> {
+        // Compute chroma for each pixel: sqrt(a^2 + b^2)
+        let mut pixels_with_chroma: Vec<(Lab, f32)> = pixels
+            .iter()
+            .map(|p| {
+                let chroma = (p.a * p.a + p.b * p.b).sqrt();
+                (*p, chroma)
+            })
+            .collect();
+
+        // Sort by chroma descending
+        pixels_with_chroma.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        // Take top 25% most saturated pixels
+        let count = (pixels_with_chroma.len() as f32 * 0.25).max(1.0) as usize;
+        let most_saturated: Vec<Lab> = pixels_with_chroma
+            .iter()
+            .take(count)
+            .map(|(p, _)| *p)
+            .collect();
+
+        // Median L*, Mean a*/b* of most saturated pixels
+        let mut l_values: Vec<f32> = most_saturated.iter().map(|p| p.l).collect();
+        l_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let l_median = l_values[l_values.len() / 2];
+
+        let a_mean: f32 = most_saturated.iter().map(|p| p.a).sum::<f32>() / most_saturated.len() as f32;
+        let b_mean: f32 = most_saturated.iter().map(|p| p.b).sum::<f32>() / most_saturated.len() as f32;
+
+        Ok(Lab::new(l_median, a_mean, b_mean))
+    }
+
+    /// Method 4: Mode (most frequent color)
+    /// Uses 3D histogram binning to find dominant color
+    fn method_mode(&self, pixels: &[Lab]) -> Result<Lab> {
+        use std::collections::HashMap;
+
+        // Quantize Lab values into bins (5 units per bin for L, 10 units for a/b)
+        let quantize_l = |l: f32| ((l / 5.0).round() * 5.0) as i32;
+        let quantize_ab = |v: f32| ((v / 10.0).round() * 10.0) as i32;
+
+        let mut histogram: HashMap<(i32, i32, i32), Vec<Lab>> = HashMap::new();
+
+        // Build histogram
+        for pixel in pixels {
+            let key = (
+                quantize_l(pixel.l),
+                quantize_ab(pixel.a),
+                quantize_ab(pixel.b),
+            );
+            histogram.entry(key).or_insert_with(Vec::new).push(*pixel);
+        }
+
+        // Find bin with most pixels
+        let most_frequent_bin = histogram
+            .iter()
+            .max_by_key(|(_, pixels)| pixels.len())
+            .map(|(_, pixels)| pixels);
+
+        match most_frequent_bin {
+            Some(dominant_pixels) => {
+                // Return mean of pixels in dominant bin
+                let l_mean: f32 = dominant_pixels.iter().map(|p| p.l).sum::<f32>() / dominant_pixels.len() as f32;
+                let a_mean: f32 = dominant_pixels.iter().map(|p| p.a).sum::<f32>() / dominant_pixels.len() as f32;
+                let b_mean: f32 = dominant_pixels.iter().map(|p| p.b).sum::<f32>() / dominant_pixels.len() as f32;
+
+                Ok(Lab::new(l_mean, a_mean, b_mean))
+            }
+            None => self.method_median_mean(pixels), // Fallback
+        }
     }
 
     /// Validate that extracted color is sufficiently different from paper
