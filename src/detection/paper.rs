@@ -32,6 +32,14 @@ const MAX_RECTIFICATION_ANGLE: f64 = 45.0;
 /// Polygon approximation epsilon as fraction of perimeter (2%)
 const POLY_APPROX_EPSILON: f64 = 0.02;
 
+/// Minimum aspect ratio for valid card (excludes very elongated rulers)
+/// Cards are typically 1:1.3 to 1:2, so we use 1:3 as minimum
+const MIN_CARD_ASPECT_RATIO: f64 = 0.33; // 1:3
+
+/// Maximum aspect ratio for valid card (excludes very elongated rulers)
+/// Cards are typically 1:1.3 to 1:2, so we use 3:1 as maximum
+const MAX_CARD_ASPECT_RATIO: f64 = 3.0; // 3:1
+
 /// Paper detection result with rectification data
 #[derive(Debug, Clone)]
 pub struct PaperDetectionResult {
@@ -190,8 +198,15 @@ impl PaperDetector {
         let min_area = image_area * self.min_area_ratio;
 
         // Find largest rectangular contour that meets area requirement
+        // and excludes elongated rulers based on aspect ratio
+        // Prioritize contours that are more centrally located
         let mut best_contour: Option<VectorOfPoint> = None;
-        let mut best_area = 0.0;
+        let mut best_score = 0.0;
+
+        let img_width = original_image.cols() as f64;
+        let img_height = original_image.rows() as f64;
+        let img_center_x = img_width / 2.0;
+        let img_center_y = img_height / 2.0;
 
         for i in 0..contours.len() {
             let contour = contours.get(i)
@@ -209,9 +224,37 @@ impl PaperDetector {
                 .map_err(|e| AnalysisError::ProcessingError(format!("Polygon approximation failed: {}", e)))?;
 
             // Only consider 4-sided polygons (rectangles/quadrilaterals)
-            if approx.len() == 4 && area >= min_area && area > best_area {
-                best_area = area;
-                best_contour = Some(contour);
+            if approx.len() == 4 && area >= min_area {
+                // Check aspect ratio to exclude rulers
+                let bounding_rect = opencv::imgproc::bounding_rect(&contour)
+                    .map_err(|e| AnalysisError::ProcessingError(format!("Bounding rect failed: {}", e)))?;
+
+                let width = bounding_rect.width as f64;
+                let height = bounding_rect.height as f64;
+                let aspect_ratio = width / height;
+
+                // Exclude very elongated rectangles (rulers)
+                // Cards have aspect ratio between 1:3 and 3:1
+                if aspect_ratio >= MIN_CARD_ASPECT_RATIO && aspect_ratio <= MAX_CARD_ASPECT_RATIO {
+                    // Calculate centrality score: prefer contours closer to image center
+                    let rect_center_x = (bounding_rect.x as f64) + (width / 2.0);
+                    let rect_center_y = (bounding_rect.y as f64) + (height / 2.0);
+
+                    let distance_from_center = ((rect_center_x - img_center_x).powi(2) +
+                                               (rect_center_y - img_center_y).powi(2)).sqrt();
+
+                    // Normalize distance by diagonal
+                    let img_diagonal = (img_width.powi(2) + img_height.powi(2)).sqrt();
+                    let centrality = 1.0 - (distance_from_center / img_diagonal);
+
+                    // Score combines area and centrality (70% area, 30% centrality)
+                    let score = (area / image_area) * 0.7 + centrality * 0.3;
+
+                    if score > best_score {
+                        best_score = score;
+                        best_contour = Some(contour);
+                    }
+                }
             }
         }
 
