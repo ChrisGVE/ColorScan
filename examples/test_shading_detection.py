@@ -324,10 +324,55 @@ def baseline_mode(pixels):
 
     return mode_pixels.mean(axis=0)
 
+def lab_to_hex(lab):
+    """Convert Lab to hex color string."""
+    l, a, b = lab
+
+    # Lab to XYZ (D65)
+    fy = (l + 16.0) / 116.0
+    fx = a / 500.0 + fy
+    fz = fy - b / 200.0
+
+    epsilon = 0.008856
+    kappa = 903.3
+
+    xr = fx**3 if fx**3 > epsilon else (116.0 * fx - 16.0) / kappa
+    yr = fy**3 if l > kappa * epsilon else l / kappa
+    zr = fz**3 if fz**3 > epsilon else (116.0 * fz - 16.0) / kappa
+
+    # D65 white point
+    x = xr * 0.95047
+    y = yr * 1.00000
+    z = zr * 1.08883
+
+    # XYZ to sRGB
+    r_linear = x * 3.2404542 + y * -1.5371385 + z * -0.4985314
+    g_linear = x * -0.9692660 + y * 1.8760108 + z * 0.0415560
+    b_linear = x * 0.0556434 + y * -0.2040259 + z * 1.0572252
+
+    # Gamma correction
+    def srgb_gamma(linear):
+        if linear <= 0.0031308:
+            return 12.92 * linear
+        else:
+            return 1.055 * (linear ** (1.0 / 2.4)) - 0.055
+
+    r = srgb_gamma(r_linear)
+    g = srgb_gamma(g_linear)
+    b = srgb_gamma(b_linear)
+
+    # Clamp and convert to 0-255
+    r = int(max(0, min(1, r)) * 255)
+    g = int(max(0, min(1, g)) * 255)
+    b = int(max(0, min(1, b)) * 255)
+
+    return f"#{r:02x}{g:02x}{b:02x}"
+
 def lab_to_color_name_and_base(lab):
     """Convert Lab to ISCC-NBS color name and Base color name using munsellspace crate.
 
     Returns: (color_name, base_color)
+    For N/A results, includes hex: ("N/A (#aabbcc)", "N")
     """
     import subprocess
 
@@ -345,13 +390,20 @@ def lab_to_color_name_and_base(lab):
             output = result.stdout.strip()
             if '|' in output:
                 name, base = output.split('|', 1)
+                # If name is N/A, add hex value
+                if name == "N/A":
+                    hex_val = lab_to_hex(lab)
+                    return (f"N/A ({hex_val})", base)
                 return (name, base)
             else:
-                return (output, "N")
+                hex_val = lab_to_hex(lab)
+                return (f"{output} ({hex_val})", "N")
         else:
-            return (f"L*{l:.0f}", "N")  # Fallback
+            hex_val = lab_to_hex(lab)
+            return (f"L*{l:.0f} ({hex_val})", "N")  # Fallback
     except Exception:
-        return (f"L*{l:.0f}", "N")  # Fallback
+        hex_val = lab_to_hex(lab)
+        return (f"L*{l:.0f} ({hex_val})", "N")  # Fallback
 
 def check_same_base_color(base1, base2):
     """Check if two colors have the same base color.
@@ -436,20 +488,24 @@ def process_sample(debug_dir, sample_name):
                 tone1_color = extract_func(region1_pixels) if len(region1_pixels) > 0 else centers[0]
                 tone2_color = extract_func(region2_pixels) if len(region2_pixels) > 0 else centers[1]
 
-            # Get color names and families
+            # Get color names and base colors
             tone1_name, tone1_base = lab_to_color_name_and_base(tone1_color)
             tone2_name, tone2_base = lab_to_color_name_and_base(tone2_color)
 
-            # Calculate metrics
-            delta_l = abs(tone2_color[0] - tone1_color[0])
-            avg_l = (tone1_color[0] + tone2_color[0]) / 2
-            rel_delta_l = (delta_l / avg_l * 100) if avg_l > 0 else 0
-
-            # Check if same Munsell family
+            # Check if same base color
             same_base = check_same_base_color(tone1_base, tone2_base)
 
-            # Shading requires: same family + significant ΔL*
-            shading = same_base and delta_l > 10
+            # Only calculate metrics if same base color (otherwise meaningless)
+            if same_base:
+                delta_l = abs(tone2_color[0] - tone1_color[0])
+                avg_l = (tone1_color[0] + tone2_color[0]) / 2
+                rel_delta_l = (delta_l / avg_l * 100) if avg_l > 0 else 0
+                # Shading requires: same base + significant ΔL*
+                shading = delta_l > 10
+            else:
+                delta_l = 0.0
+                rel_delta_l = 0.0
+                shading = False
 
             results.append({
                 'detection': detect_name,
