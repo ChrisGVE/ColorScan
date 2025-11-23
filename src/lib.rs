@@ -101,13 +101,8 @@ pub fn analyze_swatch_with_method(image_path: &Path, method: crate::color::Extra
     }
 
     // Step 2: Extract EXIF metadata and apply orientation correction
-    let metadata = ExifExtractor::extract_color_metadata(image_path)
+    let _metadata = ExifExtractor::extract_color_metadata(image_path)
         .ok(); // Ignore errors, EXIF is optional
-
-    // Extract flash usage from EXIF (default to false if not available)
-    let flash_used = metadata.as_ref()
-        .and_then(|m| m.flash_used)
-        .unwrap_or(false);
 
     // Apply EXIF orientation correction if available
     image = apply_exif_orientation(image, image_path)?;
@@ -123,12 +118,11 @@ pub fn analyze_swatch_with_method(image_path: &Path, method: crate::color::Extra
         &paper_result.foreign_object_mask,
     )?;
 
-    // Step 4b: Apply white balance correction (adaptive based on flash)
-    let corrected_image = wb_estimator.apply_correction(&paper_result.rectified_image, paper_color, flash_used)?;
+    // Step 4b: Apply white balance correction
+    let corrected_image = wb_estimator.apply_correction(&paper_result.rectified_image, paper_color)?;
 
     // After white balance correction, paper should be neutral white under D65
-    // Target L*=92 (lowered from 95 to reduce washing out)
-    let corrected_paper_color = Lab::new(92.0, 0.0, 0.0);
+    let corrected_paper_color = Lab::new(95.0, 0.0, 0.0);
 
     // Step 5: Detect ink swatch region (using corrected image and corrected paper color)
     let swatch_detector = SwatchDetector::new();
@@ -138,14 +132,13 @@ pub fn analyze_swatch_with_method(image_path: &Path, method: crate::color::Extra
         corrected_paper_color,
     )?;
 
-    // Step 6: Extract representative color from swatch using specified method (with flash awareness)
+    // Step 6: Extract representative color from swatch using specified method
     let color_analyzer = ColorAnalyzer::new();
     let color_analysis = color_analyzer.extract_color(
         &corrected_image,
         &swatch_result.swatch_mask,
         corrected_paper_color,
         method,
-        flash_used,
     )?;
 
     // Step 7: Convert to multiple color spaces
@@ -211,13 +204,8 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
     }
 
     // Step 2: Extract EXIF metadata and apply orientation correction
-    let metadata = ExifExtractor::extract_color_metadata(image_path)
-        .ok(); // Ignore errors, EXIF is optional
-
-    // Extract flash usage from EXIF (default to false if not available)
-    let flash_used = metadata.as_ref()
-        .and_then(|m| m.flash_used)
-        .unwrap_or(false);
+    let _metadata = ExifExtractor::extract_color_metadata(image_path)
+        .ok(); // Ignore errors, EXIF is optional (for future illuminant estimation)
 
     // Apply EXIF orientation correction if available
     image = apply_exif_orientation(image, image_path)?;
@@ -235,12 +223,11 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
         &paper_result.foreign_object_mask,
     )?;
 
-    // Step 4b: Apply white balance correction (adaptive based on flash)
-    let corrected_image = wb_estimator.apply_correction(&paper_result.rectified_image, paper_color, flash_used)?;
+    // Step 4b: Apply white balance correction
+    let corrected_image = wb_estimator.apply_correction(&paper_result.rectified_image, paper_color)?;
 
     // After white balance correction, paper should be neutral white under D65
-    // Target L*=92 (lowered from 95 to reduce washing out)
-    let corrected_paper_color = Lab::new(92.0, 0.0, 0.0);
+    let corrected_paper_color = Lab::new(95.0, 0.0, 0.0);
 
     // Step 5: Detect ink swatch region (using corrected image and corrected paper color)
     let swatch_detector = SwatchDetector::new();
@@ -250,14 +237,13 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
         corrected_paper_color,
     )?;
 
-    // Step 6: Extract representative color from swatch (using corrected image and corrected paper color, with flash awareness)
+    // Step 6: Extract representative color from swatch (using corrected image and corrected paper color)
     let color_analyzer = ColorAnalyzer::new();
     let color_analysis = color_analyzer.extract_color(
         &corrected_image,
         &swatch_result.swatch_mask,
         corrected_paper_color,
         crate::color::ExtractionMethod::MedianMean,
-        flash_used,
     )?;
 
     // Step 7: Convert to multiple color spaces
@@ -319,13 +305,8 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
     }
 
     // Step 2: Extract EXIF metadata and apply orientation correction
-    let metadata = ExifExtractor::extract_color_metadata(image_path)
+    let _metadata = ExifExtractor::extract_color_metadata(image_path)
         .ok(); // Ignore errors, EXIF is optional
-
-    // Extract flash usage from EXIF (default to false if not available)
-    let flash_used = metadata.as_ref()
-        .and_then(|m| m.flash_used)
-        .unwrap_or(false);
 
     // Apply EXIF orientation correction if available
     image = apply_exif_orientation(image, image_path)?;
@@ -344,12 +325,11 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
         &paper_result.foreign_object_mask,
     )?;
 
-    // Step 4b: Apply white balance correction (adaptive based on flash)
-    let corrected_image = wb_estimator.apply_correction(&paper_result.rectified_image, paper_color, flash_used)?;
+    // Step 4b: Apply white balance correction
+    let corrected_image = wb_estimator.apply_correction(&paper_result.rectified_image, paper_color)?;
 
     // After white balance correction, paper should be neutral white under D65
-    // Target L*=92 (lowered from 95 to reduce washing out)
-    let corrected_paper_color = Lab::new(92.0, 0.0, 0.0);
+    let corrected_paper_color = Lab::new(95.0, 0.0, 0.0);
 
     // Step 5: Detect ink swatch region (using corrected image and corrected paper color)
     let swatch_detector = SwatchDetector::new();
@@ -359,14 +339,13 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
         corrected_paper_color,
     )?;
 
-    // Step 6: Extract representative color from swatch (with flash awareness)
+    // Step 6: Extract representative color from swatch (using corrected image and corrected paper color)
     let color_analyzer = ColorAnalyzer::new();
     let color_analysis = color_analyzer.extract_color(
         &corrected_image,
         &swatch_result.swatch_mask,
         corrected_paper_color,
         crate::color::ExtractionMethod::MedianMean,
-        flash_used,
     )?;
 
     // Step 7: Convert to multiple color spaces
