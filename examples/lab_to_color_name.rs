@@ -56,9 +56,10 @@ fn main() {
 }
 
 fn lab_to_xyz(l: f32, a: f32, b: f32) -> (f32, f32, f32) {
-    // D65 illuminant
+    // D65 illuminant (CIE 15:2004 Colorimetry, 3rd edition)
+    // Must match scan_colors::constants::D65_WHITE_POINT_XYZ
     let x_n = 0.95047;
-    let y_n = 1.0;
+    let y_n = 1.00000;
     let z_n = 1.08883;
 
     let fy = (l + 16.0) / 116.0;
