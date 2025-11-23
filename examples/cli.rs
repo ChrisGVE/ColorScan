@@ -145,7 +145,7 @@ fn save_debug_output(debug: &scan_colors::DebugOutput, output_dir: &Path, input_
     }
 
     // Save corrected image (white balance applied)
-    let corrected_path = output_dir.join(format!("{}_corrected.png", base_name));
+    let corrected_path = output_dir.join(format!("{}_original_corrected.png", base_name));
     match imgcodecs::imwrite(corrected_path.to_str().unwrap(), &debug.corrected_image, &Vector::new()) {
         Ok(_) => eprintln!("Debug: Saved corrected image to {}", corrected_path.display()),
         Err(e) => eprintln!("Warning: Failed to save corrected image: {}", e),
