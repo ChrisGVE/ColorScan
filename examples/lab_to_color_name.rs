@@ -33,7 +33,12 @@ fn main() {
 
     match munsell_result {
         Ok(munsell_color) => {
-            // Try to get ISCC-NBS classification
+            // Extract hue family (e.g., "R", "YR", "B", "PB")
+            let hue_family = munsell_color.hue.as_ref()
+                .and_then(|h| extract_hue_family(h))
+                .unwrap_or_else(|| "N".to_string());
+
+            // Try to get ISCC-NBS classification (use alternate descriptor)
             let color_name = match (&munsell_color.hue, munsell_color.chroma) {
                 (Some(hue), Some(chroma)) => {
                     IsccNbsClassifier::new()
@@ -42,16 +47,33 @@ fn main() {
                             classifier.classify_munsell(hue.as_str(), munsell_color.value, chroma).ok()
                         })
                         .flatten()
-                        .map(|metadata| metadata.iscc_nbs_descriptor())
+                        .map(|metadata| metadata.alt_color_descriptor())  // Use alternate descriptor
                         .unwrap_or_else(|| "N/A".to_string())
                 }
                 _ => "N/A".to_string(),
             };
-            println!("{}", color_name);
+            // Output format: "color_name|hue_family"
+            println!("{}|{}", color_name, hue_family);
         }
         Err(_) => {
-            println!("N/A");
+            println!("N/A|N");
         }
+    }
+}
+
+fn extract_hue_family(hue: &str) -> Option<String> {
+    // Munsell hue format: "5R", "10YR", "2.5PB", etc.
+    // Extract the letter part (R, YR, Y, GY, G, BG, B, PB, P, RP, or N for neutral)
+
+    // Remove leading digits and decimal points
+    let letters: String = hue.chars()
+        .skip_while(|c| c.is_numeric() || *c == '.')
+        .collect();
+
+    if letters.is_empty() || letters == "N" {
+        Some("N".to_string())  // Neutral (gray)
+    } else {
+        Some(letters)
     }
 }
 

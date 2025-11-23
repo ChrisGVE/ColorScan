@@ -120,7 +120,14 @@ def simple_find_peaks(arr, min_height):
     return np.array(peaks)
 
 def histogram_bimodality(pixels):
-    """Detect bimodality in L* histogram."""
+    """Detect bimodality in L* histogram.
+
+    Always returns at least one tone. If bimodality detected, returns two tones
+    with percentages that sum to 100%.
+    """
+    if len(pixels) == 0:
+        return None, None
+
     l_values = pixels[:, 0]
     hist, bins = np.histogram(l_values, bins=20)
 
@@ -130,12 +137,19 @@ def histogram_bimodality(pixels):
     if len(peaks) >= 2:
         # Get two highest peaks
         peak_heights = hist[peaks]
-        top_two = peaks[np.argsort(peak_heights)[-2:]]
+        top_two_indices = np.argsort(peak_heights)[-2:]
+        top_two = peaks[top_two_indices]
 
-        # Get pixels in each peak region
-        bin_width = bins[1] - bins[0]
-        tone1_mask = (l_values >= bins[top_two[0]]) & (l_values < bins[top_two[0] + 1])
-        tone2_mask = (l_values >= bins[top_two[1]]) & (l_values < bins[top_two[1] + 1])
+        # Sort peaks by L* position (darker first)
+        if bins[top_two[0]] > bins[top_two[1]]:
+            top_two = top_two[::-1]
+
+        # Get pixels in each peak region - expand to include surrounding bins
+        # This ensures percentages add to 100%
+        midpoint_l = (bins[top_two[0]] + bins[top_two[1]]) / 2
+
+        tone1_mask = l_values < midpoint_l
+        tone2_mask = l_values >= midpoint_l
 
         if tone1_mask.sum() > 0 and tone2_mask.sum() > 0:
             tone1_center = pixels[tone1_mask].mean(axis=0)
@@ -144,12 +158,9 @@ def histogram_bimodality(pixels):
             pct1 = (tone1_mask.sum() / len(pixels)) * 100
             pct2 = (tone2_mask.sum() / len(pixels)) * 100
 
-            # Sort by L*
-            if tone1_center[0] < tone2_center[0]:
-                return np.array([tone1_center, tone2_center]), [pct1, pct2]
-            else:
-                return np.array([tone2_center, tone1_center]), [pct2, pct1]
+            return np.array([tone1_center, tone2_center]), [pct1, pct2]
 
+    # No bimodality detected - return single tone
     return None, None
 
 def gradient_detection(pixels):
@@ -313,8 +324,11 @@ def baseline_mode(pixels):
 
     return mode_pixels.mean(axis=0)
 
-def lab_to_color_name(lab):
-    """Convert Lab to ISCC-NBS color name using munsellspace crate."""
+def lab_to_color_name_and_family(lab):
+    """Convert Lab to ISCC-NBS color name and Munsell hue family using munsellspace crate.
+
+    Returns: (color_name, hue_family)
+    """
     import subprocess
 
     l, a, b = lab
@@ -328,31 +342,35 @@ def lab_to_color_name(lab):
             timeout=5
         )
         if result.returncode == 0:
-            return result.stdout.strip()
+            output = result.stdout.strip()
+            if '|' in output:
+                name, family = output.split('|', 1)
+                return (name, family)
+            else:
+                return (output, "N")
         else:
-            return f"L*{l:.0f}"  # Fallback
+            return (f"L*{l:.0f}", "N")  # Fallback
     except Exception:
-        return f"L*{l:.0f}"  # Fallback
+        return (f"L*{l:.0f}", "N")  # Fallback
 
-def check_same_munsell_family(lab1, lab2):
-    """Simplified check if colors are in same family based on hue angle."""
-    import math
+def check_same_munsell_family(family1, family2):
+    """Check if two Munsell hue families are the same.
 
-    # Calculate hue angles
-    h1 = math.atan2(lab1[2], lab1[1]) * 180 / math.pi
-    h2 = math.atan2(lab2[2], lab2[1]) * 180 / math.pi
+    Args:
+        family1: Munsell hue family (e.g., "R", "YR", "B", "N")
+        family2: Munsell hue family
 
-    # Normalize to 0-360
-    h1 = h1 if h1 >= 0 else h1 + 360
-    h2 = h2 if h2 >= 0 else h2 + 360
+    Returns:
+        True if both are in the same family
+    """
+    # Neutral colors ("N") don't have shading
+    if family1 == "N" or family2 == "N":
+        return False
 
-    # Check if within ~60 degrees (same general hue family)
-    hue_diff = min(abs(h1 - h2), 360 - abs(h1 - h2))
-
-    return hue_diff < 60
+    return family1 == family2
 
 def process_sample(debug_dir, sample_name):
-    """Process a single sample with all 13 methods."""
+    """Process a single sample with all 10 methods (2 detection × 3 extraction + 4 baseline)."""
     swatch, mask = load_swatch_fragment(debug_dir, sample_name)
 
     if swatch is None or mask is None:
@@ -365,12 +383,11 @@ def process_sample(debug_dir, sample_name):
 
     results = []
 
-    # === Two-Tone Detection (9 combinations: 3 detection × 3 extraction) ===
+    # === Two-Tone Detection (6 combinations: 2 detection × 3 extraction) ===
 
     detection_methods = {
         'K-means': kmeans_clustering,
         'Histogram': histogram_bimodality,
-        'Gradient': gradient_detection,
     }
 
     for detect_name, detect_func in detection_methods.items():
@@ -378,16 +395,19 @@ def process_sample(debug_dir, sample_name):
         centers, percentages = detect_func(pixels)
 
         if centers is None:
-            # Detection failed for this method
+            # Detection failed - no two-tone detected
             for extract_name in ['Gaussian', 'Average', 'Median']:
                 results.append({
                     'detection': detect_name,
                     'extraction': extract_name,
                     'tone1': 'N/A',
+                    'tone1_family': 'N',
                     'tone1_pct': 0.0,
                     'tone2': 'N/A',
+                    'tone2_family': 'N',
                     'tone2_pct': 0.0,
                     'delta_l': 0.0,
+                    'rel_delta_l': 0.0,
                     'same_family': False,
                     'shading': False
                 })
@@ -395,22 +415,20 @@ def process_sample(debug_dir, sample_name):
 
         # Create region masks for extraction
         l_values = pixels[:, 0]
-        # Simple split by L* midpoint between centers
         midpoint_l = (centers[0][0] + centers[1][0]) / 2
         region1_pixels = pixels[l_values <= midpoint_l]
         region2_pixels = pixels[l_values > midpoint_l]
 
         # Apply each extraction method
         extraction_methods = [
-            ('Gaussian', None),  # Requires swatch, handled separately
+            ('Gaussian', None),  # Use detection centers
             ('Average', extract_average),
             ('Median', extract_median),
         ]
 
         for extract_name, extract_func in extraction_methods:
             if extract_name == 'Gaussian':
-                # Gaussian needs special handling with swatch/mask
-                # For now, use the centers from detection
+                # Use centers from detection
                 tone1_color = centers[0]
                 tone2_color = centers[1]
             else:
@@ -418,19 +436,32 @@ def process_sample(debug_dir, sample_name):
                 tone1_color = extract_func(region1_pixels) if len(region1_pixels) > 0 else centers[0]
                 tone2_color = extract_func(region2_pixels) if len(region2_pixels) > 0 else centers[1]
 
+            # Get color names and families
+            tone1_name, tone1_family = lab_to_color_name_and_family(tone1_color)
+            tone2_name, tone2_family = lab_to_color_name_and_family(tone2_color)
+
             # Calculate metrics
             delta_l = abs(tone2_color[0] - tone1_color[0])
-            same_family = check_same_munsell_family(tone1_color, tone2_color)
+            avg_l = (tone1_color[0] + tone2_color[0]) / 2
+            rel_delta_l = (delta_l / avg_l * 100) if avg_l > 0 else 0
+
+            # Check if same Munsell family
+            same_family = check_same_munsell_family(tone1_family, tone2_family)
+
+            # Shading requires: same family + significant ΔL*
             shading = same_family and delta_l > 10
 
             results.append({
                 'detection': detect_name,
                 'extraction': extract_name,
-                'tone1': lab_to_color_name(tone1_color),
+                'tone1': tone1_name,
+                'tone1_family': tone1_family,
                 'tone1_pct': percentages[0],
-                'tone2': lab_to_color_name(tone2_color),
+                'tone2': tone2_name,
+                'tone2_family': tone2_family,
                 'tone2_pct': percentages[1],
                 'delta_l': delta_l,
+                'rel_delta_l': rel_delta_l,
                 'same_family': same_family,
                 'shading': shading
             })
@@ -447,15 +478,19 @@ def process_sample(debug_dir, sample_name):
     for method_name, method_func in baseline_methods:
         color = method_func(pixels)
         if color is not None:
+            color_name, color_family = lab_to_color_name_and_family(color)
             results.append({
                 'detection': method_name,
                 'extraction': 'N/A',
-                'tone1': lab_to_color_name(color),
+                'tone1': color_name,
+                'tone1_family': color_family,
                 'tone1_pct': 100.0,
                 'tone2': '-',
+                'tone2_family': '-',
                 'tone2_pct': 0.0,
                 'delta_l': 0.0,
-                'same_family': True,
+                'rel_delta_l': 0.0,
+                'same_family': False,
                 'shading': False
             })
 
@@ -494,8 +529,8 @@ def main():
         f.write("Test different approaches for detecting ink shading properties by identifying distinct tones within a swatch.\n\n")
 
         f.write("## Experimental Design\n\n")
-        f.write("**Two-Tone Detection Methods (9 combinations):**\n")
-        f.write("- **Detection**: K-means, Histogram, Gradient\n")
+        f.write("**Two-Tone Detection Methods (6 combinations):**\n")
+        f.write("- **Detection**: K-means, Histogram\n")
         f.write("- **Extraction**: Gaussian blur, Average, Median\n\n")
 
         f.write("**Baseline Single-Tone Methods (4 methods):**\n")
@@ -505,14 +540,19 @@ def main():
         f.write("4. **Mode**: Most frequent color (histogram binning)\n\n")
 
         f.write("**Shading Criteria:**\n")
-        f.write("- Both tones must be in same Munsell hue family (hue angle difference < 60°)\n")
+        f.write("- Both tones must be in same Munsell hue family (R, YR, Y, GY, G, BG, B, PB, P, RP)\n")
         f.write("- ΔL* > 10 between tones (significant luminance difference)\n\n")
+
+        f.write("**Metrics:**\n")
+        f.write("- ΔL*: Absolute luminance difference\n")
+        f.write("- Rel ΔL*: Relative luminance difference as % of average L*\n")
+        f.write("- Munsell Family: Hue family from Munsell color space\n\n")
 
         f.write("## Results\n\n")
 
         # Create detailed table
-        f.write("| Sample | Detection | Extraction | Tone 1 (Dark) | % | Tone 2 (Light) | % | ΔL* | Same Family | Shading |\n")
-        f.write("|--------|-----------|------------|---------------|---|----------------|---|-----|-------------|----------|\n")
+        f.write("| Sample | Detection | Extraction | Tone 1 (Dark) | Family | % | Tone 2 (Light) | Family | % | ΔL* | Rel ΔL* | Same Family | Shading |\n")
+        f.write("|--------|-----------|------------|---------------|--------|---|----------------|--------|---|-----|---------|-------------|----------|\n")
 
         for sample in samples:
             if sample not in all_results:
@@ -520,29 +560,33 @@ def main():
 
             results = all_results[sample]
 
-            # Write all 13 rows for this sample
+            # Write all 10 rows for this sample
             for r in results:
                 detect = r['detection']
                 extract = r['extraction']
                 tone1 = r['tone1']
+                tone1_family = r['tone1_family']
                 tone1_pct = r['tone1_pct']
                 tone2 = r['tone2']
+                tone2_family = r['tone2_family']
                 tone2_pct = r['tone2_pct']
                 delta_l = r['delta_l']
+                rel_delta_l = r['rel_delta_l']
                 same_family = r['same_family']
                 shading = r['shading']
 
-                # Format percentages
+                # Format values
                 pct1_str = f"{tone1_pct:.1f}" if tone1_pct > 0 else "-"
                 pct2_str = f"{tone2_pct:.1f}" if tone2_pct > 0 else "-"
                 delta_str = f"{delta_l:.1f}" if delta_l > 0 else "-"
+                rel_delta_str = f"{rel_delta_l:.1f}%" if rel_delta_l > 0 else "-"
                 family_str = "✓" if same_family and tone2 != "-" else ("✗" if tone2 != "-" else "-")
                 shading_str = "**YES**" if shading else "no"
 
-                f.write(f"| {sample} | {detect} | {extract} | {tone1} | {pct1_str} | {tone2} | {pct2_str} | {delta_str} | {family_str} | {shading_str} |\n")
+                f.write(f"| {sample} | {detect} | {extract} | {tone1} | {tone1_family} | {pct1_str} | {tone2} | {tone2_family} | {pct2_str} | {delta_str} | {rel_delta_str} | {family_str} | {shading_str} |\n")
 
             # Add spacing between samples
-            f.write("|--------|-----------|------------|---------------|---|----------------|---|-----|-------------|----------|\n")
+            f.write("|--------|-----------|------------|---------------|--------|---|----------------|--------|---|-----|---------|-------------|----------|\n")
 
         f.write("\n## Summary Statistics\n\n")
 
@@ -564,14 +608,13 @@ def main():
         f.write(f"**Samples analyzed:** {len(all_results)} (excluding flash samples)\n\n")
 
         f.write("**Two-Tone Shading Detection:**\n")
-        f.write(f"- K-means: {detection_shading['K-means']} detections\n")
-        f.write(f"- Histogram: {detection_shading['Histogram']} detections\n")
-        f.write(f"- Gradient: {detection_shading['Gradient']} detections\n\n")
+        f.write(f"- K-means: {detection_shading['K-means']} detections (across all 3 extraction methods)\n")
+        f.write(f"- Histogram: {detection_shading['Histogram']} detections (across all 3 extraction methods)\n\n")
 
         f.write("**By Extraction Method:**\n")
-        f.write(f"- Gaussian: {extraction_shading['Gaussian']} detections\n")
-        f.write(f"- Average: {extraction_shading['Average']} detections\n")
-        f.write(f"- Median: {extraction_shading['Median']} detections\n\n")
+        f.write(f"- Gaussian: {extraction_shading['Gaussian']} detections (across both detection methods)\n")
+        f.write(f"- Average: {extraction_shading['Average']} detections (across both detection methods)\n")
+        f.write(f"- Median: {extraction_shading['Median']} detections (across both detection methods)\n\n")
 
         f.write("**Baseline Methods:**\n")
         f.write(f"- All baseline methods process {len(all_results)} samples (single-tone only)\n\n")
