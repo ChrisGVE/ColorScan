@@ -90,6 +90,7 @@ impl ColorAnalyzer {
     /// * `mask` - Binary mask of ink region (true = ink)
     /// * `paper_color` - Estimated paper color in Lab space
     /// * `method` - Extraction method to use
+    /// * `flash_used` - Whether flash was used (from EXIF)
     ///
     /// # Returns
     ///
@@ -107,9 +108,10 @@ impl ColorAnalyzer {
         mask: &Mat,
         paper_color: Lab,
         method: ExtractionMethod,
+        flash_used: bool,
     ) -> Result<ColorAnalysisResult> {
-        // Step 1: Extract ink pixels
-        let lab_pixels = self.extract_lab_pixels(image, mask)?;
+        // Step 1: Extract ink pixels with overexposure filtering
+        let lab_pixels = self.extract_lab_pixels(image, mask, flash_used)?;
 
         if lab_pixels.is_empty() {
             return Err(AnalysisError::SwatchTooSmall("No pixels in swatch mask".into()));
@@ -151,8 +153,11 @@ impl ColorAnalyzer {
         })
     }
 
-    /// Extract Lab pixels from image using mask
-    fn extract_lab_pixels(&self, image: &Mat, mask: &Mat) -> Result<Vec<Lab>> {
+    /// Extract Lab pixels from image using mask, filtering overexposed pixels
+    fn extract_lab_pixels(&self, image: &Mat, mask: &Mat, flash_used: bool) -> Result<Vec<Lab>> {
+        // Overexposure threshold: more aggressive for flash images to exclude shimmer sparkles
+        let overexposure_threshold = if flash_used { 90.0 } else { 95.0 };
+
         // Convert image to Lab
         let mut lab_image = Mat::default();
         cvt_color(image, &mut lab_image, COLOR_BGR2Lab, 0, opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT)
@@ -176,7 +181,10 @@ impl ColorAnalyzer {
                     let a = (pixel[1] as f32) - 128.0;
                     let b = (pixel[2] as f32) - 128.0;
 
-                    pixels.push(Lab::new(l, a, b));
+                    // Filter overexposed pixels (shimmer sparkles, specular highlights)
+                    if l <= overexposure_threshold {
+                        pixels.push(Lab::new(l, a, b));
+                    }
                 }
             }
         }

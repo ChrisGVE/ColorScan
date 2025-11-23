@@ -116,25 +116,31 @@ impl WhiteBalanceEstimator {
     /// Apply white balance correction to an image
     ///
     /// Corrects image colors from estimated illuminant to D65 standard.
-    /// Uses a simple chromatic adaptation approach.
+    /// Uses a simple chromatic adaptation approach with adaptive strength.
     ///
     /// # Arguments
     ///
     /// * `image` - Input BGR image to correct
     /// * `paper_color` - Estimated paper color under current illuminant
+    /// * `flash_used` - Whether flash was used (from EXIF)
     ///
     /// # Returns
     ///
     /// White balance corrected BGR image
-    pub fn apply_correction(&self, image: &Mat, paper_color: Lab<D65>) -> Result<Mat> {
+    pub fn apply_correction(&self, image: &Mat, paper_color: Lab<D65>, flash_used: bool) -> Result<Mat> {
         // Target paper color under D65 (assumed to be neutral white)
-        // L* around 95 (very light), a* and b* near 0 (neutral)
-        let target_paper: Lab<D65> = Lab::new(95.0, 0.0, 0.0);
+        // L* = 92 (lowered from 95 to reduce washing out)
+        let target_paper: Lab<D65> = Lab::new(92.0, 0.0, 0.0);
 
-        // Compute correction offsets in Lab space
-        let delta_l = target_paper.l - paper_color.l;
-        let delta_a = target_paper.a - paper_color.a;
-        let delta_b = target_paper.b - paper_color.b;
+        // Adaptive correction strength based on flash usage
+        // Flash images: 30% correction (avoid over-correcting flash color cast)
+        // Non-flash images: 60% correction (preserve color saturation)
+        let strength = if flash_used { 0.3 } else { 0.6 };
+
+        // Compute correction offsets in Lab space with adaptive strength
+        let delta_l = (target_paper.l - paper_color.l) * strength;
+        let delta_a = (target_paper.a - paper_color.a) * strength;
+        let delta_b = (target_paper.b - paper_color.b) * strength;
 
         // Convert image to Lab
         let mut lab_image = Mat::default();
