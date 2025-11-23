@@ -324,10 +324,10 @@ def baseline_mode(pixels):
 
     return mode_pixels.mean(axis=0)
 
-def lab_to_color_name_and_family(lab):
-    """Convert Lab to ISCC-NBS color name and Munsell hue family using munsellspace crate.
+def lab_to_color_name_and_base(lab):
+    """Convert Lab to ISCC-NBS color name and Base color name using munsellspace crate.
 
-    Returns: (color_name, hue_family)
+    Returns: (color_name, base_color)
     """
     import subprocess
 
@@ -344,8 +344,8 @@ def lab_to_color_name_and_family(lab):
         if result.returncode == 0:
             output = result.stdout.strip()
             if '|' in output:
-                name, family = output.split('|', 1)
-                return (name, family)
+                name, base = output.split('|', 1)
+                return (name, base)
             else:
                 return (output, "N")
         else:
@@ -353,21 +353,21 @@ def lab_to_color_name_and_family(lab):
     except Exception:
         return (f"L*{l:.0f}", "N")  # Fallback
 
-def check_same_munsell_family(family1, family2):
-    """Check if two Munsell hue families are the same.
+def check_same_base_color(base1, base2):
+    """Check if two colors have the same base color.
 
     Args:
-        family1: Munsell hue family (e.g., "R", "YR", "B", "N")
-        family2: Munsell hue family
+        base1: Base color name (e.g., "red", "blue", "teal", "N")
+        base2: Base color name
 
     Returns:
-        True if both are in the same family
+        True if both have the same base color
     """
-    # Neutral colors ("N") don't have shading
-    if family1 == "N" or family2 == "N":
+    # Neutral colors ("N") and "N/A" don't have shading
+    if base1 in ("N", "N/A") or base2 in ("N", "N/A"):
         return False
 
-    return family1 == family2
+    return base1 == base2
 
 def process_sample(debug_dir, sample_name):
     """Process a single sample with all 10 methods (2 detection × 3 extraction + 4 baseline)."""
@@ -401,14 +401,14 @@ def process_sample(debug_dir, sample_name):
                     'detection': detect_name,
                     'extraction': extract_name,
                     'tone1': 'N/A',
-                    'tone1_family': 'N',
+                    'tone1_base': 'N',
                     'tone1_pct': 0.0,
                     'tone2': 'N/A',
-                    'tone2_family': 'N',
+                    'tone2_base': 'N',
                     'tone2_pct': 0.0,
                     'delta_l': 0.0,
                     'rel_delta_l': 0.0,
-                    'same_family': False,
+                    'same_base': False,
                     'shading': False
                 })
             continue
@@ -437,8 +437,8 @@ def process_sample(debug_dir, sample_name):
                 tone2_color = extract_func(region2_pixels) if len(region2_pixels) > 0 else centers[1]
 
             # Get color names and families
-            tone1_name, tone1_family = lab_to_color_name_and_family(tone1_color)
-            tone2_name, tone2_family = lab_to_color_name_and_family(tone2_color)
+            tone1_name, tone1_base = lab_to_color_name_and_base(tone1_color)
+            tone2_name, tone2_base = lab_to_color_name_and_base(tone2_color)
 
             # Calculate metrics
             delta_l = abs(tone2_color[0] - tone1_color[0])
@@ -446,23 +446,23 @@ def process_sample(debug_dir, sample_name):
             rel_delta_l = (delta_l / avg_l * 100) if avg_l > 0 else 0
 
             # Check if same Munsell family
-            same_family = check_same_munsell_family(tone1_family, tone2_family)
+            same_base = check_same_base_color(tone1_base, tone2_base)
 
             # Shading requires: same family + significant ΔL*
-            shading = same_family and delta_l > 10
+            shading = same_base and delta_l > 10
 
             results.append({
                 'detection': detect_name,
                 'extraction': extract_name,
                 'tone1': tone1_name,
-                'tone1_family': tone1_family,
+                'tone1_base': tone1_base,
                 'tone1_pct': percentages[0],
                 'tone2': tone2_name,
-                'tone2_family': tone2_family,
+                'tone2_base': tone2_base,
                 'tone2_pct': percentages[1],
                 'delta_l': delta_l,
                 'rel_delta_l': rel_delta_l,
-                'same_family': same_family,
+                'same_base': same_base,
                 'shading': shading
             })
 
@@ -478,19 +478,19 @@ def process_sample(debug_dir, sample_name):
     for method_name, method_func in baseline_methods:
         color = method_func(pixels)
         if color is not None:
-            color_name, color_family = lab_to_color_name_and_family(color)
+            color_name, color_family = lab_to_color_name_and_base(color)
             results.append({
                 'detection': method_name,
                 'extraction': 'N/A',
                 'tone1': color_name,
-                'tone1_family': color_family,
+                'tone1_base': color_family,
                 'tone1_pct': 100.0,
                 'tone2': '-',
-                'tone2_family': '-',
+                'tone2_base': '-',
                 'tone2_pct': 0.0,
                 'delta_l': 0.0,
                 'rel_delta_l': 0.0,
-                'same_family': False,
+                'same_base': False,
                 'shading': False
             })
 
@@ -540,19 +540,19 @@ def main():
         f.write("4. **Mode**: Most frequent color (histogram binning)\n\n")
 
         f.write("**Shading Criteria:**\n")
-        f.write("- Both tones must be in same Munsell hue family (R, YR, Y, GY, G, BG, B, PB, P, RP)\n")
+        f.write("- Both tones must have the same base color (e.g., both \"blue\", both \"red\", both \"teal\")\n")
         f.write("- ΔL* > 10 between tones (significant luminance difference)\n\n")
 
         f.write("**Metrics:**\n")
         f.write("- ΔL*: Absolute luminance difference\n")
         f.write("- Rel ΔL*: Relative luminance difference as % of average L*\n")
-        f.write("- Munsell Family: Hue family from Munsell color space\n\n")
+        f.write("- Base Color: ISCC-NBS base color name from munsellspace\n\n")
 
         f.write("## Results\n\n")
 
         # Create detailed table
-        f.write("| Sample | Detection | Extraction | Tone 1 (Dark) | Family | % | Tone 2 (Light) | Family | % | ΔL* | Rel ΔL* | Same Family | Shading |\n")
-        f.write("|--------|-----------|------------|---------------|--------|---|----------------|--------|---|-----|---------|-------------|----------|\n")
+        f.write("| Sample | Detection | Extraction | Tone 1 (Dark) | Base | % | Tone 2 (Light) | Base | % | ΔL* | Rel ΔL* | Same Base | Shading |\n")
+        f.write("|--------|-----------|------------|---------------|------|---|----------------|------|---|-----|---------|-----------|----------|\n")
 
         for sample in samples:
             if sample not in all_results:
@@ -565,14 +565,14 @@ def main():
                 detect = r['detection']
                 extract = r['extraction']
                 tone1 = r['tone1']
-                tone1_family = r['tone1_family']
+                tone1_base = r['tone1_base']
                 tone1_pct = r['tone1_pct']
                 tone2 = r['tone2']
-                tone2_family = r['tone2_family']
+                tone2_base = r['tone2_base']
                 tone2_pct = r['tone2_pct']
                 delta_l = r['delta_l']
                 rel_delta_l = r['rel_delta_l']
-                same_family = r['same_family']
+                same_base = r['same_base']
                 shading = r['shading']
 
                 # Format values
@@ -580,10 +580,10 @@ def main():
                 pct2_str = f"{tone2_pct:.1f}" if tone2_pct > 0 else "-"
                 delta_str = f"{delta_l:.1f}" if delta_l > 0 else "-"
                 rel_delta_str = f"{rel_delta_l:.1f}%" if rel_delta_l > 0 else "-"
-                family_str = "✓" if same_family and tone2 != "-" else ("✗" if tone2 != "-" else "-")
+                family_str = "✓" if same_base and tone2 != "-" else ("✗" if tone2 != "-" else "-")
                 shading_str = "**YES**" if shading else "no"
 
-                f.write(f"| {sample} | {detect} | {extract} | {tone1} | {tone1_family} | {pct1_str} | {tone2} | {tone2_family} | {pct2_str} | {delta_str} | {rel_delta_str} | {family_str} | {shading_str} |\n")
+                f.write(f"| {sample} | {detect} | {extract} | {tone1} | {tone1_base} | {pct1_str} | {tone2} | {tone2_base} | {pct2_str} | {delta_str} | {rel_delta_str} | {family_str} | {shading_str} |\n")
 
             # Add spacing between samples
             f.write("|--------|-----------|------------|---------------|--------|---|----------------|--------|---|-----|---------|-------------|----------|\n")

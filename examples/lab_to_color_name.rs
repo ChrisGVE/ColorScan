@@ -1,6 +1,7 @@
 #!/usr/bin/env cargo
-//! Simple helper to convert Lab values to ISCC-NBS color names using munsellspace
+//! Simple helper to convert Lab values to ISCC-NBS color names and base colors using munsellspace
 //! Usage: cargo run --example lab_to_color_name -- <L> <a> <b>
+//! Output format: "color_name|base_color" (e.g., "moderate teal|teal")
 
 use munsellspace::{MunsellConverter, IsccNbsClassifier};
 
@@ -33,13 +34,8 @@ fn main() {
 
     match munsell_result {
         Ok(munsell_color) => {
-            // Extract hue family (e.g., "R", "YR", "B", "PB")
-            let hue_family = munsell_color.hue.as_ref()
-                .and_then(|h| extract_hue_family(h))
-                .unwrap_or_else(|| "N".to_string());
-
-            // Try to get ISCC-NBS classification (use alternate descriptor)
-            let color_name = match (&munsell_color.hue, munsell_color.chroma) {
+            // Try to get ISCC-NBS classification
+            let (color_name, base_color) = match (&munsell_color.hue, munsell_color.chroma) {
                 (Some(hue), Some(chroma)) => {
                     IsccNbsClassifier::new()
                         .ok()
@@ -47,33 +43,23 @@ fn main() {
                             classifier.classify_munsell(hue.as_str(), munsell_color.value, chroma).ok()
                         })
                         .flatten()
-                        .map(|metadata| metadata.alt_color_descriptor())  // Use alternate descriptor
-                        .unwrap_or_else(|| "N/A".to_string())
+                        .map(|metadata| {
+                            // Extract alternate descriptor (full color name) and base color name
+                            let descriptor = metadata.alt_color_descriptor();
+                            let base = metadata.alt_color_name.clone();
+                            (descriptor, base)
+                        })
+                        .unwrap_or_else(|| ("N/A".to_string(), "N".to_string()))
                 }
-                _ => "N/A".to_string(),
+                _ => ("N/A".to_string(), "N".to_string()),
             };
-            // Output format: "color_name|hue_family"
-            println!("{}|{}", color_name, hue_family);
+            // Output format: "color_name|base_color"
+            // e.g., "moderate teal|teal" or "light blue|blue"
+            println!("{}|{}", color_name, base_color);
         }
         Err(_) => {
             println!("N/A|N");
         }
-    }
-}
-
-fn extract_hue_family(hue: &str) -> Option<String> {
-    // Munsell hue format: "5R", "10YR", "2.5PB", etc.
-    // Extract the letter part (R, YR, Y, GY, G, BG, B, PB, P, RP, or N for neutral)
-
-    // Remove leading digits and decimal points
-    let letters: String = hue.chars()
-        .skip_while(|c| c.is_numeric() || *c == '.')
-        .collect();
-
-    if letters.is_empty() || letters == "N" {
-        Some("N".to_string())  // Neutral (gray)
-    } else {
-        Some(letters)
     }
 }
 
