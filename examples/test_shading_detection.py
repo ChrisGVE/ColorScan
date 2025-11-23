@@ -171,15 +171,25 @@ def median_method(pixels):
     return np.median(pixels, axis=0)
 
 def lab_to_color_name(lab):
-    """Convert Lab to rough color name (simplified)."""
+    """Convert Lab to ISCC-NBS color name using munsellspace crate."""
+    import subprocess
+
     l, a, b = lab
 
-    if l < 30:
-        return f"dark L*{l:.0f}"
-    elif l > 70:
-        return f"light L*{l:.0f}"
-    else:
-        return f"moderate L*{l:.0f}"
+    try:
+        result = subprocess.run(
+            ['cargo', 'run', '--release', '--example', 'lab_to_color_name', '--',
+             str(l), str(a), str(b)],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+        else:
+            return f"L*{l:.0f}"  # Fallback
+    except Exception:
+        return f"L*{l:.0f}"  # Fallback
 
 def check_same_munsell_family(lab1, lab2):
     """Simplified check if colors are in same family based on hue angle."""
