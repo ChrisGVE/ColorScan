@@ -30,8 +30,10 @@ pub mod calibration;
 pub mod detection;
 pub mod color;
 pub mod exif;
+pub mod config;
 
 pub use error::{AnalysisError, Result};
+pub use config::PipelineConfig;
 
 /// Complete color analysis result with perceptual and display representations
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

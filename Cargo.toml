@@ -36,3 +36,11 @@ harness = false
 [[example]]
 name = "cli"
 path = "examples/cli.rs"
+
+[[example]]
+name = "cli_batch"
+path = "examples/cli_batch.rs"
+
+[[example]]
+name = "generate_config"
+path = "examples/generate_config.rs"

@@ -3,29 +3,48 @@
 Shading Detection Experiment
 Tests different approaches for detecting ink shading properties.
 
-Experimental Design:
-- Two-Tone Detection: 3 detection methods × 3 extraction methods = 9 combinations
-- Single-Tone Baseline: 4 methods from ExtractionMethod enum
-- Total: 13 methods per sample
+Generates two result files:
+- two-colors-results.md: Shows only first 2 colors with full metrics
+- three-colors-results.md: Shows all 3 colors with full metrics
 
-Detection Methods:
-1. K-means clustering (k=2)
-2. Histogram bimodality (L* histogram peaks)
-3. Spatial gradient analysis (edge-based region detection)
+Experimental Design:
+- Multi-Tone Detection: 2 detection methods × 4 extraction methods = 8 combinations
+- Single-Tone Baseline: 4 global extraction methods
+- Detection: K-means (k=3), Histogram (1-3 peaks)
+- Total: 12 methods per sample
+
+Detection Methods (can return 1-3 colors):
+1. K-means clustering (k=3, may reduce to 2 or 1 after deduplication)
+2. Histogram multimodality (L* histogram peaks, 1-3 modes)
 
 Extraction Methods (applied to each detected region):
-1. Gaussian blur → center pixel
+1. Gaussian blur → average of region (K-means centers)
 2. Average of pixels in region
 3. Median of pixels in region
+4. Mode: Most frequent L* bin in region
 
-Baseline Methods (single-tone, no shading detection):
-1. MedianMean: Median L*, Mean a*/b* on 15-85 percentile
+Global Methods (no shading detection, single color):
+1. Median: Pure median of L*, a*, b* (robust, no filtering)
 2. Darkest: 10-25 percentile L* (concentrated ink)
 3. MostSaturated: Highest chroma pixels (true color)
-4. Mode: Most frequent color (histogram binning)
+4. Mode: Most frequent L* bin (global histogram)
+
+Deduplication:
+- If 2+ detected colors have same ISCC-NBS name, merge regions and re-extract
+- Ensures each color in results has unique name
+
+Color Ordering:
+- Colors sorted by spatial frequency (%) descending
+- Color 1 = most frequent, Color 2/3 = less frequent
+
+Shading Criteria:
+- All colors must have same base color family (e.g., all "blue")
+- All colors must have different ISCC-NBS names (not identical)
+- Relative ΔL* > 30% between darkest and lightest tones
 """
 import sys
 import os
+import subprocess
 from pathlib import Path
 import numpy as np
 import cv2
@@ -77,28 +96,42 @@ def extract_lab_pixels(swatch, mask=None):
 
     return np.array(pixels)
 
-def kmeans_clustering(pixels, k=2, max_iter=100):
-    """Simple K-means clustering to detect tones."""
-    if len(pixels) < k:
-        return None, None
+def kmeans_clustering(pixels, k=3, max_iter=100):
+    """K-means clustering to detect 1-3 tones.
 
-    # Initialize centers: pick darkest and lightest L* values
+    Returns:
+        centers: Array of cluster centers (1-3 colors)
+        percentages: List of percentages for each cluster
+        labels: Cluster assignment for each pixel
+    """
+    if len(pixels) < k:
+        return None, None, None
+
+    # Initialize centers across L* range (10th, 50th, 90th percentile)
     l_values = pixels[:, 0]
-    dark_idx = np.argmin(l_values)
-    light_idx = np.argmax(l_values)
-    centers = np.array([pixels[dark_idx], pixels[light_idx]])
+    if k == 3:
+        p10_idx = np.argmin(np.abs(l_values - np.percentile(l_values, 10)))
+        p50_idx = np.argmin(np.abs(l_values - np.percentile(l_values, 50)))
+        p90_idx = np.argmin(np.abs(l_values - np.percentile(l_values, 90)))
+        centers = np.array([pixels[p10_idx], pixels[p50_idx], pixels[p90_idx]])
+    elif k == 2:
+        dark_idx = np.argmin(l_values)
+        light_idx = np.argmax(l_values)
+        centers = np.array([pixels[dark_idx], pixels[light_idx]])
+    else:
+        centers = np.array([pixels[np.argmin(l_values)]])
 
     for _ in range(max_iter):
         # Assign labels based on distance to centers
-        distances = np.zeros((len(pixels), k))
-        for i in range(k):
+        distances = np.zeros((len(pixels), len(centers)))
+        for i in range(len(centers)):
             distances[:, i] = np.linalg.norm(pixels - centers[i], axis=1)
 
         labels = np.argmin(distances, axis=1)
 
         # Update centers
-        new_centers = np.zeros((k, 3))
-        for i in range(k):
+        new_centers = np.zeros((len(centers), 3))
+        for i in range(len(centers)):
             cluster_pixels = pixels[labels == i]
             if len(cluster_pixels) > 0:
                 new_centers[i] = cluster_pixels.mean(axis=0)
@@ -115,10 +148,9 @@ def kmeans_clustering(pixels, k=2, max_iter=100):
     unique, counts = np.unique(labels, return_counts=True)
     percentages = dict(zip(unique, (counts / len(labels)) * 100))
 
-    # Sort by L* value (darker first, then lighter)
-    sorted_indices = np.argsort(centers[:, 0])
-
-    return centers[sorted_indices], [percentages[i] for i in sorted_indices]
+    # Return clusters with their percentages and labels
+    # Don't sort yet - will be sorted by frequency later
+    return centers, [percentages.get(i, 0.0) for i in range(len(centers))], labels
 
 def simple_find_peaks(arr, min_height):
     """Simple peak detection without scipy."""
@@ -128,14 +160,16 @@ def simple_find_peaks(arr, min_height):
             peaks.append(i)
     return np.array(peaks)
 
-def histogram_bimodality(pixels):
-    """Detect bimodality in L* histogram.
+def histogram_multimodality(pixels):
+    """Detect 1-3 modes in L* histogram.
 
-    Always returns at least one tone. If bimodality detected, returns two tones
-    with percentages that sum to 100%.
+    Returns:
+        centers: Array of mode centers (1-3 colors)
+        percentages: List of percentages for each mode
+        labels: Mode assignment for each pixel
     """
     if len(pixels) == 0:
-        return None, None
+        return None, None, None
 
     l_values = pixels[:, 0]
     hist, bins = np.histogram(l_values, bins=20)
@@ -143,144 +177,116 @@ def histogram_bimodality(pixels):
     # Find peaks with simple peak detection
     peaks = simple_find_peaks(hist, min_height=len(pixels) * 0.05)
 
-    if len(peaks) >= 2:
+    if len(peaks) >= 3:
+        # Get three highest peaks
+        peak_heights = hist[peaks]
+        top_three_indices = np.argsort(peak_heights)[-3:]
+        top_three = peaks[top_three_indices]
+
+        # Sort peaks by L* position (darker first)
+        top_three = top_three[np.argsort(bins[top_three])]
+
+        # Divide pixels into 3 regions using midpoints
+        mid1_l = (bins[top_three[0]] + bins[top_three[1]]) / 2
+        mid2_l = (bins[top_three[1]] + bins[top_three[2]]) / 2
+
+        labels = np.zeros(len(pixels), dtype=int)
+        labels[l_values < mid1_l] = 0
+        labels[(l_values >= mid1_l) & (l_values < mid2_l)] = 1
+        labels[l_values >= mid2_l] = 2
+
+        centers = []
+        percentages = []
+        for i in range(3):
+            region_pixels = pixels[labels == i]
+            if len(region_pixels) > 0:
+                centers.append(region_pixels.mean(axis=0))
+                percentages.append((len(region_pixels) / len(pixels)) * 100)
+            else:
+                # Empty region - shouldn't happen but handle gracefully
+                centers.append(pixels.mean(axis=0))
+                percentages.append(0.0)
+
+        return np.array(centers), percentages, labels
+
+    elif len(peaks) >= 2:
         # Get two highest peaks
         peak_heights = hist[peaks]
         top_two_indices = np.argsort(peak_heights)[-2:]
         top_two = peaks[top_two_indices]
 
         # Sort peaks by L* position (darker first)
-        if bins[top_two[0]] > bins[top_two[1]]:
-            top_two = top_two[::-1]
+        top_two = top_two[np.argsort(bins[top_two])]
 
-        # Get pixels in each peak region - expand to include surrounding bins
-        # This ensures percentages add to 100%
+        # Divide pixels into 2 regions
         midpoint_l = (bins[top_two[0]] + bins[top_two[1]]) / 2
 
-        tone1_mask = l_values < midpoint_l
-        tone2_mask = l_values >= midpoint_l
+        labels = np.zeros(len(pixels), dtype=int)
+        labels[l_values < midpoint_l] = 0
+        labels[l_values >= midpoint_l] = 1
 
-        if tone1_mask.sum() > 0 and tone2_mask.sum() > 0:
-            tone1_center = pixels[tone1_mask].mean(axis=0)
-            tone2_center = pixels[tone2_mask].mean(axis=0)
+        tone1_pixels = pixels[labels == 0]
+        tone2_pixels = pixels[labels == 1]
 
-            pct1 = (tone1_mask.sum() / len(pixels)) * 100
-            pct2 = (tone2_mask.sum() / len(pixels)) * 100
+        if len(tone1_pixels) > 0 and len(tone2_pixels) > 0:
+            centers = np.array([tone1_pixels.mean(axis=0), tone2_pixels.mean(axis=0)])
+            pct1 = (len(tone1_pixels) / len(pixels)) * 100
+            pct2 = (len(tone2_pixels) / len(pixels)) * 100
 
-            return np.array([tone1_center, tone2_center]), [pct1, pct2]
+            return centers, [pct1, pct2], labels
 
-    # No bimodality detected - return single tone (average of all pixels)
+    # No multimodality detected - return single tone
     single_tone = pixels.mean(axis=0)
-    return np.array([single_tone]), [100.0]
-
-def gradient_detection(pixels):
-    """Detect tones using spatial gradient analysis."""
-    # This is a simplified version - real implementation would use spatial coordinates
-    # For now, treat similar to histogram bimodality but with gradient-weighted binning
-    l_values = pixels[:, 0]
-
-    # Use gradient in L* space to find boundaries
-    hist, bins = np.histogram(l_values, bins=20)
-
-    # Find largest gap in histogram (indicates two separate regions)
-    gaps = []
-    for i in range(len(hist) - 1):
-        if hist[i] > len(pixels) * 0.05 and hist[i+1] < len(pixels) * 0.02:
-            gaps.append((i, hist[i] - hist[i+1]))
-
-    if not gaps:
-        return None, None
-
-    # Use largest gap as boundary
-    boundary_idx = max(gaps, key=lambda x: x[1])[0]
-    boundary_l = bins[boundary_idx]
-
-    # Split pixels by boundary
-    tone1_mask = l_values <= boundary_l
-    tone2_mask = l_values > boundary_l
-
-    if tone1_mask.sum() > 0 and tone2_mask.sum() > 0:
-        tone1_center = pixels[tone1_mask].mean(axis=0)
-        tone2_center = pixels[tone2_mask].mean(axis=0)
-
-        pct1 = (tone1_mask.sum() / len(pixels)) * 100
-        pct2 = (tone2_mask.sum() / len(pixels)) * 100
-
-        # Sort by L*
-        if tone1_center[0] < tone2_center[0]:
-            return np.array([tone1_center, tone2_center]), [pct1, pct2]
-        else:
-            return np.array([tone2_center, tone1_center]), [pct2, pct1]
-
-    return None, None
+    labels = np.zeros(len(pixels), dtype=int)
+    return np.array([single_tone]), [100.0], labels
 
 # Extraction methods for applying to detected regions
-def extract_gaussian_blur(swatch, mask, region_mask):
-    """Apply Gaussian blur and extract center pixel color."""
-    # Ensure dimensions match
-    if swatch.shape[:2] != region_mask.shape[:2]:
-        region_mask = cv2.resize(region_mask, (swatch.shape[1], swatch.shape[0]), interpolation=cv2.INTER_NEAREST)
-
-    # Apply region mask to swatch
-    masked_swatch = swatch.copy()
-    masked_swatch[region_mask == 0] = 0
-
-    # Apply strong Gaussian blur
-    blurred = cv2.GaussianBlur(masked_swatch, (51, 51), 0)
-    lab_blurred = cv2.cvtColor(blurred, cv2.COLOR_BGR2Lab)
-
-    # Find center of mass of region
-    M = cv2.moments(region_mask.astype(np.uint8))
-    if M["m00"] == 0:
+def extract_gaussian(region_pixels):
+    """Gaussian: Average of region pixels (simplified from blur approach)."""
+    if len(region_pixels) == 0:
         return None
+    return region_pixels.mean(axis=0)
 
-    cx = int(M["m10"] / M["m00"])
-    cy = int(M["m01"] / M["m00"])
-
-    # Ensure coordinates are within bounds
-    cy = min(cy, lab_blurred.shape[0] - 1)
-    cx = min(cx, lab_blurred.shape[1] - 1)
-
-    # Get color at center
-    l, a, b = lab_blurred[cy, cx]
-    l_norm = (l / 255.0) * 100.0
-    a_norm = a - 128.0
-    b_norm = b - 128.0
-
-    return np.array([l_norm, a_norm, b_norm])
-
-def extract_average(pixels):
+def extract_average(region_pixels):
     """Average of all pixels in region."""
-    if len(pixels) == 0:
+    if len(region_pixels) == 0:
         return None
-    return pixels.mean(axis=0)
+    return region_pixels.mean(axis=0)
 
-def extract_median(pixels):
+def extract_median(region_pixels):
     """Median of all pixels in region."""
+    if len(region_pixels) == 0:
+        return None
+    return np.median(region_pixels, axis=0)
+
+def extract_mode(region_pixels):
+    """Mode: Most frequent L* bin in region."""
+    if len(region_pixels) == 0:
+        return None
+
+    # Bin L* values into 20 bins
+    l_values = region_pixels[:, 0]
+    hist, bins = np.histogram(l_values, bins=20)
+
+    # Find most frequent bin
+    mode_idx = np.argmax(hist)
+
+    # Get pixels in mode bin
+    bin_low = bins[mode_idx]
+    bin_high = bins[mode_idx + 1]
+    mode_pixels = region_pixels[(l_values >= bin_low) & (l_values < bin_high)]
+
+    if len(mode_pixels) == 0:
+        return None
+
+    return mode_pixels.mean(axis=0)
+
+# Global baseline methods (single-tone extraction)
+def baseline_median(pixels):
+    """Median: Pure median of L*, a*, b* (robust, no filtering)."""
     if len(pixels) == 0:
         return None
     return np.median(pixels, axis=0)
-
-# Baseline single-tone methods (from ExtractionMethod enum)
-def baseline_median_mean(pixels):
-    """MedianMean: Median L*, Mean a*/b* on 15-85 percentile."""
-    if len(pixels) == 0:
-        return None
-
-    # Filter to 15-85 percentile based on L*
-    l_values = pixels[:, 0]
-    p15 = np.percentile(l_values, 15)
-    p85 = np.percentile(l_values, 85)
-
-    filtered = pixels[(l_values >= p15) & (l_values <= p85)]
-    if len(filtered) == 0:
-        return None
-
-    l_median = np.median(filtered[:, 0])
-    a_mean = filtered[:, 1].mean()
-    b_mean = filtered[:, 2].mean()
-
-    return np.array([l_median, a_mean, b_mean])
 
 def baseline_darkest(pixels):
     """Darkest: 10-25 percentile L* (concentrated/wet ink)."""
@@ -313,7 +319,7 @@ def baseline_most_saturated(pixels):
     return saturated.mean(axis=0)
 
 def baseline_mode(pixels):
-    """Mode: Most frequent color (histogram binning)."""
+    """Mode: Most frequent L* bin (global histogram)."""
     if len(pixels) == 0:
         return None
 
@@ -415,24 +421,90 @@ def lab_to_color_name_and_base(lab):
         hex_val = lab_to_hex(lab)
         return (f"L*{l:.0f} ({hex_val})", "N")  # Fallback
 
-def check_same_base_color(base1, base2):
-    """Check if two colors have the same base color.
+def deduplicate_colors(centers, percentages, labels, pixels, extract_func):
+    """Deduplicate colors with same ISCC-NBS name by merging regions.
 
     Args:
-        base1: Base color name (e.g., "red", "blue", "teal", "N")
-        base2: Base color name
+        centers: Array of detected cluster centers
+        percentages: List of percentages for each cluster
+        labels: Cluster assignment for each pixel
+        pixels: All pixels (for re-extraction)
+        extract_func: Extraction function to apply to merged region
 
     Returns:
-        True if both have the same base color
+        deduplicated_centers: Array of unique colors
+        deduplicated_percentages: List of percentages
+        deduplicated_labels: Updated labels
     """
-    # Neutral colors ("N") and "N/A" don't have shading
-    if base1 in ("N", "N/A") or base2 in ("N", "N/A"):
-        return False
+    if len(centers) == 1:
+        return centers, percentages, labels
 
-    return base1 == base2
+    # Get color names for all centers
+    color_info = []
+    for i, center in enumerate(centers):
+        name, base = lab_to_color_name_and_base(center)
+        color_info.append({'idx': i, 'name': name, 'base': base, 'pct': percentages[i]})
+
+    # Group by color name
+    name_groups = defaultdict(list)
+    for info in color_info:
+        name_groups[info['name']].append(info)
+
+    # If no duplicates, return as-is
+    if all(len(group) == 1 for group in name_groups.values()):
+        return centers, percentages, labels
+
+    # Merge duplicate groups
+    new_centers = []
+    new_percentages = []
+    new_labels = np.copy(labels)
+    label_mapping = {}
+    next_label = 0
+
+    for name, group in name_groups.items():
+        if len(group) == 1:
+            # No duplication for this color
+            old_idx = group[0]['idx']
+            label_mapping[old_idx] = next_label
+            new_centers.append(centers[old_idx])
+            new_percentages.append(group[0]['pct'])
+        else:
+            # Multiple clusters with same name - merge them
+            old_indices = [info['idx'] for info in group]
+            merged_pct = sum(info['pct'] for info in group)
+
+            # Combine regions from all duplicate clusters
+            merged_mask = np.isin(labels, old_indices)
+            merged_pixels = pixels[merged_mask]
+
+            # Re-extract color from merged region
+            if len(merged_pixels) > 0:
+                merged_color = extract_func(merged_pixels)
+                if merged_color is not None:
+                    new_centers.append(merged_color)
+                    new_percentages.append(merged_pct)
+                else:
+                    # Fallback: use average of duplicate centers
+                    new_centers.append(np.mean([centers[idx] for idx in old_indices], axis=0))
+                    new_percentages.append(merged_pct)
+            else:
+                new_centers.append(np.mean([centers[idx] for idx in old_indices], axis=0))
+                new_percentages.append(merged_pct)
+
+            # Map all old labels to new merged label
+            for old_idx in old_indices:
+                label_mapping[old_idx] = next_label
+
+        next_label += 1
+
+    # Remap labels
+    for old_label, new_label in label_mapping.items():
+        new_labels[labels == old_label] = new_label
+
+    return np.array(new_centers), new_percentages, new_labels
 
 def process_sample(debug_dir, sample_name):
-    """Process a single sample with all 10 methods (2 detection × 3 extraction + 4 baseline)."""
+    """Process a single sample with all 12 methods (2 detection × 4 extraction + 4 global)."""
     swatch, mask = load_swatch_fragment(debug_dir, sample_name)
 
     if swatch is None or mask is None:
@@ -445,139 +517,132 @@ def process_sample(debug_dir, sample_name):
 
     results = []
 
-    # === Two-Tone Detection (6 combinations: 2 detection × 3 extraction) ===
+    # === Multi-Tone Detection (8 combinations: 2 detection × 4 extraction) ===
 
     detection_methods = {
         'K-means': kmeans_clustering,
-        'Histogram': histogram_bimodality,
+        'Histogram': histogram_multimodality,
     }
+
+    extraction_methods = [
+        ('Gaussian', extract_gaussian),
+        ('Average', extract_average),
+        ('Median', extract_median),
+        ('Mode', extract_mode),
+    ]
 
     for detect_name, detect_func in detection_methods.items():
         # Run detection
-        centers, percentages = detect_func(pixels)
+        centers, percentages, labels = detect_func(pixels)
 
-        if centers is None:
-            # Detection failed - should not happen anymore
-            for extract_name in ['Gaussian', 'Average', 'Median']:
+        if centers is None or len(centers) == 0:
+            # Detection failed
+            for extract_name, _ in extraction_methods:
                 results.append({
                     'detection': detect_name,
                     'extraction': extract_name,
-                    'tone1': 'N/A',
-                    'tone1_base': 'N',
-                    'tone1_pct': 0.0,
-                    'tone2': 'N/A',
-                    'tone2_base': 'N',
-                    'tone2_pct': 0.0,
-                    'delta_l': 0.0,
-                    'rel_delta_l': 0.0,
-                    'same_base': False,
+                    'colors': [],
                     'shading': False
                 })
             continue
-
-        # Check if single-tone or two-tone detection
-        if len(centers) == 1:
-            # Single tone detected (no shading) - treat as baseline
-            single_color = centers[0]
-            color_name, color_base = lab_to_color_name_and_base(single_color)
-
-            for extract_name in ['Gaussian', 'Average', 'Median']:
-                results.append({
-                    'detection': detect_name,
-                    'extraction': extract_name,
-                    'tone1': color_name,
-                    'tone1_base': color_base,
-                    'tone1_pct': 100.0,
-                    'tone2': '-',
-                    'tone2_base': '-',
-                    'tone2_pct': 0.0,
-                    'delta_l': 0.0,
-                    'rel_delta_l': 0.0,
-                    'same_base': False,
-                    'shading': False
-                })
-            continue
-
-        # Two-tone detected - proceed with extraction
-        # Create region masks for extraction
-        l_values = pixels[:, 0]
-        midpoint_l = (centers[0][0] + centers[1][0]) / 2
-        region1_pixels = pixels[l_values <= midpoint_l]
-        region2_pixels = pixels[l_values > midpoint_l]
 
         # Apply each extraction method
-        extraction_methods = [
-            ('Gaussian', None),  # Use detection centers
-            ('Average', extract_average),
-            ('Median', extract_median),
-        ]
-
         for extract_name, extract_func in extraction_methods:
-            if extract_name == 'Gaussian':
-                # Use centers from detection
-                tone1_color = centers[0]
-                tone2_color = centers[1]
-            else:
-                # Apply extraction to regions
-                tone1_color = extract_func(region1_pixels) if len(region1_pixels) > 0 else centers[0]
-                tone2_color = extract_func(region2_pixels) if len(region2_pixels) > 0 else centers[1]
+            # Extract colors for each region
+            extracted_centers = []
+            for i in range(len(centers)):
+                region_pixels = pixels[labels == i]
+                if len(region_pixels) > 0:
+                    color = extract_func(region_pixels)
+                    if color is not None:
+                        extracted_centers.append(color)
+                    else:
+                        extracted_centers.append(centers[i])
+                else:
+                    extracted_centers.append(centers[i])
+
+            extracted_centers = np.array(extracted_centers)
+
+            # Deduplicate colors with same ISCC-NBS name
+            dedup_centers, dedup_percentages, dedup_labels = deduplicate_colors(
+                extracted_centers, percentages, labels, pixels, extract_func
+            )
+
+            # Sort by frequency (descending)
+            sorted_indices = np.argsort(dedup_percentages)[::-1]
+            sorted_centers = dedup_centers[sorted_indices]
+            sorted_percentages = [dedup_percentages[i] for i in sorted_indices]
 
             # Get color names and base colors
-            tone1_name, tone1_base = lab_to_color_name_and_base(tone1_color)
-            tone2_name, tone2_base = lab_to_color_name_and_base(tone2_color)
+            color_data = []
+            for center, pct in zip(sorted_centers, sorted_percentages):
+                name, base = lab_to_color_name_and_base(center)
+                color_data.append({
+                    'name': name,
+                    'base': base,
+                    'pct': pct,
+                    'lab': center
+                })
 
-            # Check if same base color
-            same_base = check_same_base_color(tone1_base, tone2_base)
+            # Calculate metrics
+            delta_l = 0.0
+            rel_delta_l = 0.0
+            same_base = False
+            shading = False
 
-            # Only calculate metrics if same base color (otherwise meaningless)
-            if same_base:
-                delta_l = abs(tone2_color[0] - tone1_color[0])
-                avg_l = (tone1_color[0] + tone2_color[0]) / 2
+            if len(color_data) >= 2:
+                # All colors must have same base color family
+                bases = [c['base'] for c in color_data]
+                same_base = all(b == bases[0] for b in bases) and bases[0] not in ('N', 'N/A')
+
+                # All colors must have different names
+                names = [c['name'] for c in color_data]
+                different_names = len(set(names)) == len(names)
+
+                # Calculate Delta L* and Rel Delta L*
+                l_values = [c['lab'][0] for c in color_data]
+                min_l = min(l_values)
+                max_l = max(l_values)
+                delta_l = max_l - min_l
+                avg_l = (min_l + max_l) / 2
                 rel_delta_l = (delta_l / avg_l * 100) if avg_l > 0 else 0
-                # Shading requires: same base + significant ΔL*
-                shading = delta_l > 10
-            else:
-                delta_l = 0.0
-                rel_delta_l = 0.0
-                shading = False
+
+                # Shading if: same base + different names + relative ΔL* > 30%
+                if same_base and different_names:
+                    shading = rel_delta_l > 30
 
             results.append({
                 'detection': detect_name,
                 'extraction': extract_name,
-                'tone1': tone1_name,
-                'tone1_base': tone1_base,
-                'tone1_pct': percentages[0],
-                'tone2': tone2_name,
-                'tone2_base': tone2_base,
-                'tone2_pct': percentages[1],
+                'colors': color_data,
                 'delta_l': delta_l,
                 'rel_delta_l': rel_delta_l,
                 'same_base': same_base,
                 'shading': shading
             })
 
-    # === Baseline Single-Tone Methods (4 methods) ===
+    # === Global Single-Tone Methods (4 methods) ===
 
-    baseline_methods = [
-        ('MedianMean', baseline_median_mean),
+    global_methods = [
+        ('Median', baseline_median),
         ('Darkest', baseline_darkest),
         ('MostSaturated', baseline_most_saturated),
         ('Mode', baseline_mode),
     ]
 
-    for method_name, method_func in baseline_methods:
+    for method_name, method_func in global_methods:
         color = method_func(pixels)
         if color is not None:
-            color_name, color_family = lab_to_color_name_and_base(color)
+            color_name, color_base = lab_to_color_name_and_base(color)
             results.append({
-                'detection': method_name,
-                'extraction': 'N/A',
-                'tone1': color_name,
-                'tone1_base': color_family,
-                'tone1_pct': 100.0,
-                'tone2': '-',
-                'tone2_base': '-',
-                'tone2_pct': 0.0,
+                'detection': 'Global',
+                'extraction': method_name,
+                'colors': [{
+                    'name': color_name,
+                    'base': color_base,
+                    'pct': 100.0,
+                    'lab': color
+                }],
                 'delta_l': 0.0,
                 'rel_delta_l': 0.0,
                 'same_base': False,
@@ -586,32 +651,15 @@ def process_sample(debug_dir, sample_name):
 
     return results
 
-def main():
-    if len(sys.argv) < 3:
-        print("Usage: test_shading_detection.py <debug_dir> <output_md>")
-        sys.exit(1)
+def generate_report(all_results, samples, output_file, num_colors):
+    """Generate markdown report for 2-color or 3-color results.
 
-    debug_dir = sys.argv[1]
-    output_file = sys.argv[2]
-
-    # Get all samples (exclude flash)
-    samples = []
-    for f in Path(debug_dir).glob("*_swatch.png"):
-        sample_name = f.stem.replace("_swatch", "")
-        if "flash" not in sample_name.lower():
-            samples.append(sample_name)
-
-    samples.sort()
-
-    # Process all samples
-    all_results = {}
-    for sample in samples:
-        print(f"Processing {sample}...", file=sys.stderr)
-        results = process_sample(debug_dir, sample)
-        if results:
-            all_results[sample] = results
-
-    # Generate markdown report
+    Args:
+        all_results: Dictionary of sample results
+        samples: List of sample names
+        output_file: Output markdown file path
+        num_colors: 2 or 3 (number of color columns to show)
+    """
     with open(output_file, 'w') as f:
         f.write("# Shading Detection Experiment\n\n")
 
@@ -619,30 +667,40 @@ def main():
         f.write("Test different approaches for detecting ink shading properties by identifying distinct tones within a swatch.\n\n")
 
         f.write("## Experimental Design\n\n")
-        f.write("**Two-Tone Detection Methods (6 combinations):**\n")
-        f.write("- **Detection**: K-means, Histogram\n")
-        f.write("- **Extraction**: Gaussian blur, Average, Median\n\n")
+        f.write("**Multi-Tone Detection Methods (8 combinations):**\n")
+        f.write("- **Detection**: K-means (k=3), Histogram (1-3 peaks)\n")
+        f.write("- **Extraction**: Gaussian, Average, Median, Mode\n\n")
 
-        f.write("**Baseline Single-Tone Methods (4 methods):**\n")
-        f.write("1. **MedianMean**: Median L*, Mean a*/b* on 15-85 percentile\n")
+        f.write("**Global Single-Tone Methods (4 methods):**\n")
+        f.write("1. **Median**: Pure median of L*, a*, b* (robust, no filtering)\n")
         f.write("2. **Darkest**: 10-25 percentile L* (concentrated/wet ink)\n")
         f.write("3. **MostSaturated**: Highest chroma pixels (true ink color)\n")
-        f.write("4. **Mode**: Most frequent color (histogram binning)\n\n")
+        f.write("4. **Mode**: Most frequent L* bin (global histogram)\n\n")
 
         f.write("**Shading Criteria:**\n")
-        f.write("- Both tones must have the same base color (e.g., both \"blue\", both \"red\", both \"teal\")\n")
-        f.write("- ΔL* > 10 between tones (significant luminance difference)\n\n")
+        f.write("- All colors must have the same base color family (e.g., all \"blue\")\n")
+        f.write("- All colors must have different ISCC-NBS names (no duplicates)\n")
+        f.write("- Relative ΔL* > 30% between darkest and lightest tones\n\n")
+
+        f.write("**Color Ordering:**\n")
+        f.write("- Colors sorted by spatial frequency (%) descending\n")
+        f.write("- Color 1 = most frequent, Color 2/3 = less frequent\n\n")
 
         f.write("**Metrics:**\n")
-        f.write("- ΔL*: Absolute luminance difference\n")
+        f.write("- ΔL*: Absolute luminance difference between darkest and lightest\n")
         f.write("- Rel ΔL*: Relative luminance difference as % of average L*\n")
+        f.write("- Same Base: Whether all colors share the same base color family\n")
         f.write("- Base Color: ISCC-NBS base color name from munsellspace\n\n")
 
         f.write("## Results\n\n")
 
-        # Create detailed table
-        f.write("| Sample | Detection | Extraction | Tone 1 (Dark) | Base | % | Tone 2 (Light) | Base | % | ΔL* | Rel ΔL* | Same Base | Shading |\n")
-        f.write("|--------|-----------|------------|---------------|------|---|----------------|------|---|-----|---------|-----------|----------|\n")
+        # Create table header based on num_colors
+        if num_colors == 2:
+            f.write("| Sample | Detection | Extraction | Color 1 | Base | % | Color 2 | Base | % | ΔL* | Rel ΔL* | Same Base | Shading |\n")
+            f.write("|--------|-----------|------------|---------|------|---|---------|------|---|-----|---------|-----------|----------|\n")
+        else:  # 3 colors
+            f.write("| Sample | Detection | Extraction | Color 1 | Base | % | Color 2 | Base | % | Color 3 | Base | % | ΔL* | Rel ΔL* | Same Base | Shading |\n")
+            f.write("|--------|-----------|------------|---------|------|---|---------|------|---|---------|------|---|-----|---------|-----------|----------|\n")
 
         for sample in samples:
             if sample not in all_results:
@@ -650,64 +708,70 @@ def main():
 
             results = all_results[sample]
 
-            # Write all 10 rows for this sample
+            # Write all rows for this sample
             for r in results:
                 detect = r['detection']
                 extract = r['extraction']
-                tone1 = r['tone1']
-                tone1_base = r['tone1_base']
-                tone1_pct = r['tone1_pct']
-                tone2 = r['tone2']
-                tone2_base = r['tone2_base']
-                tone2_pct = r['tone2_pct']
+                colors = r['colors'][:]  # Copy to avoid modifying original
                 delta_l = r['delta_l']
                 rel_delta_l = r['rel_delta_l']
                 same_base = r['same_base']
                 shading = r['shading']
 
-                # Format values
-                pct1_str = f"{tone1_pct:.1f}" if tone1_pct > 0 else "-"
-                pct2_str = f"{tone2_pct:.1f}" if tone2_pct > 0 else "-"
+                # Pad to required number of colors
+                while len(colors) < num_colors:
+                    colors.append({'name': '-', 'base': '-', 'pct': 0.0})
+
+                # Format metric strings
                 delta_str = f"{delta_l:.1f}" if delta_l > 0 else "-"
                 rel_delta_str = f"{rel_delta_l:.1f}%" if rel_delta_l > 0 else "-"
-                family_str = "✓" if same_base and tone2 != "-" else ("✗" if tone2 != "-" else "-")
+                same_base_str = "✓" if same_base and len(r['colors']) >= 2 else ("✗" if len(r['colors']) >= 2 else "-")
                 shading_str = "**YES**" if shading else "no"
 
-                f.write(f"| {sample} | {detect} | {extract} | {tone1} | {tone1_base} | {pct1_str} | {tone2} | {tone2_base} | {pct2_str} | {delta_str} | {rel_delta_str} | {family_str} | {shading_str} |\n")
+                if num_colors == 2:
+                    c1, c2 = colors[0], colors[1]
+                    pct1_str = f"{c1['pct']:.1f}" if c1['pct'] > 0 else "-"
+                    pct2_str = f"{c2['pct']:.1f}" if c2['pct'] > 0 else "-"
+                    f.write(f"| {sample} | {detect} | {extract} | {c1['name']} | {c1['base']} | {pct1_str} | {c2['name']} | {c2['base']} | {pct2_str} | {delta_str} | {rel_delta_str} | {same_base_str} | {shading_str} |\n")
+                else:  # 3 colors
+                    c1, c2, c3 = colors[0], colors[1], colors[2]
+                    pct1_str = f"{c1['pct']:.1f}" if c1['pct'] > 0 else "-"
+                    pct2_str = f"{c2['pct']:.1f}" if c2['pct'] > 0 else "-"
+                    pct3_str = f"{c3['pct']:.1f}" if c3['pct'] > 0 else "-"
+                    f.write(f"| {sample} | {detect} | {extract} | {c1['name']} | {c1['base']} | {pct1_str} | {c2['name']} | {c2['base']} | {pct2_str} | {c3['name']} | {c3['base']} | {pct3_str} | {delta_str} | {rel_delta_str} | {same_base_str} | {shading_str} |\n")
 
-            # Add spacing between samples
-            f.write("|--------|-----------|------------|---------------|--------|---|----------------|--------|---|-----|---------|-------------|----------|\n")
+            # Add spacing between samples (blank line with column bars)
+            if num_colors == 2:
+                f.write("| | | | | | | | | | | | | |\n")
+            else:
+                f.write("| | | | | | | | | | | | | | | | |\n")
 
         f.write("\n## Summary Statistics\n\n")
 
-        # Count shading detections per detection method
+        # Count shading detections
         detection_shading = defaultdict(int)
         extraction_shading = defaultdict(int)
-        baseline_counts = defaultdict(int)
 
         for sample, results in all_results.items():
             for r in results:
-                if r['extraction'] == 'N/A':
-                    # Baseline method
-                    baseline_counts[r['detection']] += 1
-                elif r['shading']:
-                    # Two-tone shading detected
+                if r['detection'] != 'Global' and r['shading']:
                     detection_shading[r['detection']] += 1
                     extraction_shading[r['extraction']] += 1
 
         f.write(f"**Samples analyzed:** {len(all_results)} (excluding flash samples)\n\n")
 
-        f.write("**Two-Tone Shading Detection:**\n")
-        f.write(f"- K-means: {detection_shading['K-means']} detections (across all 3 extraction methods)\n")
-        f.write(f"- Histogram: {detection_shading['Histogram']} detections (across all 3 extraction methods)\n\n")
+        f.write("**Multi-Tone Shading Detection:**\n")
+        f.write(f"- K-means: {detection_shading['K-means']} detections (across all 4 extraction methods)\n")
+        f.write(f"- Histogram: {detection_shading['Histogram']} detections (across all 4 extraction methods)\n\n")
 
         f.write("**By Extraction Method:**\n")
         f.write(f"- Gaussian: {extraction_shading['Gaussian']} detections (across both detection methods)\n")
         f.write(f"- Average: {extraction_shading['Average']} detections (across both detection methods)\n")
-        f.write(f"- Median: {extraction_shading['Median']} detections (across both detection methods)\n\n")
+        f.write(f"- Median: {extraction_shading['Median']} detections (across both detection methods)\n")
+        f.write(f"- Mode: {extraction_shading['Mode']} detections (across both detection methods)\n\n")
 
-        f.write("**Baseline Methods:**\n")
-        f.write(f"- All baseline methods process {len(all_results)} samples (single-tone only)\n\n")
+        f.write("**Global Methods:**\n")
+        f.write(f"- All global methods process {len(all_results)} samples (single-tone only)\n\n")
 
         f.write("## Observations\n\n")
         f.write("*To be filled after manual review of results*\n\n")
@@ -717,11 +781,100 @@ def main():
         f.write("1. Which detection method works best?\n")
         f.write("2. Which extraction method works best?\n")
         f.write("3. Does the best combination vary by ink type?\n")
-        f.write("4. How do two-tone methods compare to baseline single-tone methods?\n")
-        f.write("5. Should we adjust ΔL* threshold?\n")
-        f.write("6. Should we adjust hue angle threshold for \"same family\"?\n")
+        f.write("4. How do multi-tone methods compare to global single-tone methods?\n")
+        f.write("5. Should we adjust the 30% relative ΔL* threshold?\n")
 
-    print(f"\nReport generated: {output_file}")
+def process_samples_with_cli(config_path):
+    """Process all samples using Rust batch CLI with JSON configuration.
+
+    Args:
+        config_path: Path to JSON configuration file
+
+    Returns:
+        List of sample names that were processed
+    """
+    config_path = Path(config_path)
+
+    if not config_path.exists():
+        print(f"Error: Config file {config_path} not found", file=sys.stderr)
+        return []
+
+    print(f"\nProcessing samples using config: {config_path}", file=sys.stderr)
+
+    try:
+        result = subprocess.run(
+            ["cargo", "run", "--release", "--example", "cli_batch", "--", str(config_path)],
+            capture_output=False,  # Show progress to user
+            text=True,
+            timeout=600  # 10 minutes for batch processing
+        )
+
+        if result.returncode != 0:
+            print(f"Error: Batch processing failed with return code {result.returncode}", file=sys.stderr)
+            return []
+
+    except subprocess.TimeoutExpired:
+        print(f"Error: Batch processing timed out", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"Error running batch CLI: {e}", file=sys.stderr)
+        return []
+
+    # Load config to find output directory and get sample list
+    import json
+    with open(config_path) as f:
+        config = json.load(f)
+
+    output_path = Path(config['output_path'])
+
+    # Find all processed samples by looking at generated swatch images
+    samples = []
+    for swatch_file in sorted(output_path.glob("*_swatch.png")):
+        sample_name = swatch_file.stem.replace("_swatch", "")
+        samples.append(sample_name)
+
+    print(f"✓ Processed {len(samples)} samples", file=sys.stderr)
+    return samples
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: test_shading_detection.py <config.json>")
+        print("Example: test_shading_detection.py \"validation/Experiment 0/config.json\"")
+        sys.exit(1)
+
+    config_path = sys.argv[1]
+
+    # Process samples with Rust batch CLI (generates debug images)
+    samples = process_samples_with_cli(config_path)
+
+    if not samples:
+        print("Error: No samples processed", file=sys.stderr)
+        sys.exit(1)
+
+    # Load config to get output directory
+    import json
+    with open(config_path) as f:
+        config = json.load(f)
+
+    output_dir = Path(config['output_path'])
+
+    # Analyze swatch images for shading detection
+    print("\nAnalyzing shading...", file=sys.stderr)
+    all_results = {}
+    for sample in samples:
+        results = process_sample(str(output_dir), sample)
+        if results:
+            all_results[sample] = results
+
+    # Generate both reports
+    print("Generating reports...", file=sys.stderr)
+    generate_report(all_results, samples, output_dir / "two-colors-results.md", num_colors=2)
+    generate_report(all_results, samples, output_dir / "three-colors-results.md", num_colors=3)
+
+    print(f"\n✓ Experiment complete!")
+    print(f"  Two-color results: {output_dir / 'two-colors-results.md'}")
+    print(f"  Three-color results: {output_dir / 'three-colors-results.md'}")
+    print(f"  Images: {output_dir}/")
 
 if __name__ == '__main__':
     main()
