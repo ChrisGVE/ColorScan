@@ -160,8 +160,9 @@ def histogram_bimodality(pixels):
 
             return np.array([tone1_center, tone2_center]), [pct1, pct2]
 
-    # No bimodality detected - return single tone
-    return None, None
+    # No bimodality detected - return single tone (average of all pixels)
+    single_tone = pixels.mean(axis=0)
+    return np.array([single_tone]), [100.0]
 
 def gradient_detection(pixels):
     """Detect tones using spatial gradient analysis."""
@@ -447,7 +448,7 @@ def process_sample(debug_dir, sample_name):
         centers, percentages = detect_func(pixels)
 
         if centers is None:
-            # Detection failed - no two-tone detected
+            # Detection failed - should not happen anymore
             for extract_name in ['Gaussian', 'Average', 'Median']:
                 results.append({
                     'detection': detect_name,
@@ -465,6 +466,30 @@ def process_sample(debug_dir, sample_name):
                 })
             continue
 
+        # Check if single-tone or two-tone detection
+        if len(centers) == 1:
+            # Single tone detected (no shading) - treat as baseline
+            single_color = centers[0]
+            color_name, color_base = lab_to_color_name_and_base(single_color)
+
+            for extract_name in ['Gaussian', 'Average', 'Median']:
+                results.append({
+                    'detection': detect_name,
+                    'extraction': extract_name,
+                    'tone1': color_name,
+                    'tone1_base': color_base,
+                    'tone1_pct': 100.0,
+                    'tone2': '-',
+                    'tone2_base': '-',
+                    'tone2_pct': 0.0,
+                    'delta_l': 0.0,
+                    'rel_delta_l': 0.0,
+                    'same_base': False,
+                    'shading': False
+                })
+            continue
+
+        # Two-tone detected - proceed with extraction
         # Create region masks for extraction
         l_values = pixels[:, 0]
         midpoint_l = (centers[0][0] + centers[1][0]) / 2
