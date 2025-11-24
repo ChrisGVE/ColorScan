@@ -12,8 +12,19 @@ import numpy as np
 import cv2
 from pathlib import Path
 
-def extract_lab_pixels_with_coords(swatch, mask):
-    """Extract Lab pixels with their (y, x) spatial coordinates."""
+def extract_lab_pixels_with_coords(swatch, mask, min_lightness=5.0):
+    """Extract Lab pixels with their (y, x) spatial coordinates.
+
+    Args:
+        swatch: BGR image
+        mask: Binary mask
+        min_lightness: Minimum L* value to include (filters out background fill)
+                       Default 5.0 excludes #000000 and near-black pixels
+
+    Returns:
+        pixels: Lab values (N, 3)
+        coords: Spatial coordinates (N, 2)
+    """
     if swatch.shape[:2] != mask.shape[:2]:
         mask = cv2.resize(mask, (swatch.shape[1], swatch.shape[0]), interpolation=cv2.INTER_NEAREST)
 
@@ -21,6 +32,8 @@ def extract_lab_pixels_with_coords(swatch, mask):
 
     pixels = []
     coords = []
+    filtered_count = 0
+
     for y in range(min(mask.shape[0], lab.shape[0])):
         for x in range(min(mask.shape[1], lab.shape[1])):
             if mask[y, x] > 0:
@@ -28,8 +41,16 @@ def extract_lab_pixels_with_coords(swatch, mask):
                 l_norm = (l / 255.0) * 100.0
                 a_norm = a - 128.0
                 b_norm = b - 128.0
-                pixels.append([l_norm, a_norm, b_norm])
-                coords.append([y, x])
+
+                # Filter out background fill (L* ≈ 0)
+                if l_norm >= min_lightness:
+                    pixels.append([l_norm, a_norm, b_norm])
+                    coords.append([y, x])
+                else:
+                    filtered_count += 1
+
+    if filtered_count > 0:
+        print(f"  → Filtered {filtered_count} background pixels (L* < {min_lightness})")
 
     return np.array(pixels), np.array(coords)
 

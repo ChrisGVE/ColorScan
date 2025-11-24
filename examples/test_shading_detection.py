@@ -44,8 +44,19 @@ def load_swatch_fragment(debug_dir, sample_name):
 
     return swatch, mask
 
-def extract_lab_pixels(swatch, mask):
-    """Extract Lab pixels from masked swatch region."""
+def extract_lab_pixels(swatch, mask, min_lightness=5.0):
+    """Extract Lab pixels from masked swatch region.
+
+    Args:
+        swatch: BGR image
+        mask: Binary mask
+        min_lightness: Minimum L* value to include (default 5.0 filters out #000000 background fill)
+
+    Note:
+        Filters out background fill pixels (L* < min_lightness) that appear in rectangular
+        swatch images where the actual ink swatch has irregular edges. These #000000 pixels
+        are not ink and must be excluded from all color analysis.
+    """
     # Ensure swatch and mask have same dimensions
     if swatch.shape[:2] != mask.shape[:2]:
         # Resize mask to match swatch dimensions
@@ -64,7 +75,9 @@ def extract_lab_pixels(swatch, mask):
                 l_norm = (l / 255.0) * 100.0
                 a_norm = a - 128.0
                 b_norm = b - 128.0
-                pixels.append([l_norm, a_norm, b_norm])
+                # Filter out background fill (L* ≈ 0)
+                if l_norm >= min_lightness:
+                    pixels.append([l_norm, a_norm, b_norm])
 
     return np.array(pixels)
 
