@@ -12,45 +12,44 @@ import numpy as np
 import cv2
 from pathlib import Path
 
-def extract_lab_pixels_with_coords(swatch, mask, min_lightness=5.0):
+def extract_lab_pixels_with_coords(swatch, mask=None):
     """Extract Lab pixels with their (y, x) spatial coordinates.
 
     Args:
-        swatch: BGR image
-        mask: Binary mask
-        min_lightness: Minimum L* value to include (filters out background fill)
-                       Default 5.0 excludes #000000 and near-black pixels
+        swatch: BGR image (already cropped with #000000 padding around irregular edges)
+        mask: Unused (kept for compatibility) - mask was already applied during swatch extraction
 
     Returns:
         pixels: Lab values (N, 3)
         coords: Spatial coordinates (N, 2)
-    """
-    if swatch.shape[:2] != mask.shape[:2]:
-        mask = cv2.resize(mask, (swatch.shape[1], swatch.shape[0]), interpolation=cv2.INTER_NEAREST)
 
+    Note:
+        Filters out pure #000000 BGR padding while keeping all ink pixels,
+        even very dark inks (which are not pure #000000).
+    """
     lab = cv2.cvtColor(swatch, cv2.COLOR_BGR2Lab)
 
     pixels = []
     coords = []
     filtered_count = 0
 
-    for y in range(min(mask.shape[0], lab.shape[0])):
-        for x in range(min(mask.shape[1], lab.shape[1])):
-            if mask[y, x] > 0:
-                l, a, b = lab[y, x]
+    for y in range(swatch.shape[0]):
+        for x in range(swatch.shape[1]):
+            b, g, r = swatch[y, x]
+            # Filter out pure black padding (BGR #000000)
+            # Real ink pixels, even very dark ones, are not pure #000000
+            if not (b == 0 and g == 0 and r == 0):
+                l, a_val, b_val = lab[y, x]
                 l_norm = (l / 255.0) * 100.0
-                a_norm = a - 128.0
-                b_norm = b - 128.0
-
-                # Filter out background fill (L* ≈ 0)
-                if l_norm >= min_lightness:
-                    pixels.append([l_norm, a_norm, b_norm])
-                    coords.append([y, x])
-                else:
-                    filtered_count += 1
+                a_norm = a_val - 128.0
+                b_norm = b_val - 128.0
+                pixels.append([l_norm, a_norm, b_norm])
+                coords.append([y, x])
+            else:
+                filtered_count += 1
 
     if filtered_count > 0:
-        print(f"  → Filtered {filtered_count} background pixels (L* < {min_lightness})")
+        print(f"  → Filtered {filtered_count} background pixels (BGR #000000)")
 
     return np.array(pixels), np.array(coords)
 

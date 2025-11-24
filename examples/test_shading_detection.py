@@ -44,40 +44,36 @@ def load_swatch_fragment(debug_dir, sample_name):
 
     return swatch, mask
 
-def extract_lab_pixels(swatch, mask, min_lightness=5.0):
-    """Extract Lab pixels from masked swatch region.
+def extract_lab_pixels(swatch, mask=None):
+    """Extract Lab pixels from swatch, filtering out #000000 padding.
 
     Args:
-        swatch: BGR image
-        mask: Binary mask
-        min_lightness: Minimum L* value to include (default 5.0 filters out #000000 background fill)
+        swatch: BGR image (already cropped with #000000 padding around irregular edges)
+        mask: Unused (kept for compatibility) - mask was already applied during swatch extraction
 
     Note:
-        Filters out background fill pixels (L* < min_lightness) that appear in rectangular
-        swatch images where the actual ink swatch has irregular edges. These #000000 pixels
-        are not ink and must be excluded from all color analysis.
+        The swatch image is a cropped rectangle from the full image, with #000000 BGR pixels
+        as padding where the irregular ink swatch edges don't fill the rectangle.
+        We filter out pure #000000 BGR to exclude this padding while keeping all ink pixels,
+        even very dark inks (which are not pure #000000).
     """
-    # Ensure swatch and mask have same dimensions
-    if swatch.shape[:2] != mask.shape[:2]:
-        # Resize mask to match swatch dimensions
-        mask = cv2.resize(mask, (swatch.shape[1], swatch.shape[0]), interpolation=cv2.INTER_NEAREST)
-
     # Convert to Lab
     lab = cv2.cvtColor(swatch, cv2.COLOR_BGR2Lab)
 
-    # Get pixels where mask is non-zero
+    # Extract pixels, filtering out #000000 BGR padding
     pixels = []
-    for y in range(min(mask.shape[0], lab.shape[0])):
-        for x in range(min(mask.shape[1], lab.shape[1])):
-            if mask[y, x] > 0:
-                l, a, b = lab[y, x]
+    for y in range(swatch.shape[0]):
+        for x in range(swatch.shape[1]):
+            b, g, r = swatch[y, x]
+            # Filter out pure black padding (BGR #000000)
+            # Real ink pixels, even very dark ones, are not pure #000000
+            if not (b == 0 and g == 0 and r == 0):
+                l, a_val, b_val = lab[y, x]
                 # Convert OpenCV Lab to standard Lab
                 l_norm = (l / 255.0) * 100.0
-                a_norm = a - 128.0
-                b_norm = b - 128.0
-                # Filter out background fill (L* ≈ 0)
-                if l_norm >= min_lightness:
-                    pixels.append([l_norm, a_norm, b_norm])
+                a_norm = a_val - 128.0
+                b_norm = b_val - 128.0
+                pixels.append([l_norm, a_norm, b_norm])
 
     return np.array(pixels)
 
