@@ -156,7 +156,7 @@ impl PipelineConfig {
     pub fn default_experiment_0() -> Self {
         Self {
             input_path: PathBuf::from("validation/swatch_samples"),
-            output_path: PathBuf::from("validation/Experiment 0"),
+            output_path: PathBuf::from("validation/Experiment 0/images"),
             preprocessing: PreprocessingConfig {
                 exif_correction: true,
                 white_balance: WhiteBalanceConfig {
