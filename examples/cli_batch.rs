@@ -2,7 +2,7 @@
 //!
 //! Processes all images in a directory using a JSON configuration file
 
-use scan_colors::{analyze_swatch_debug, PipelineConfig};
+use scan_colors::{analyze_swatch_debug_with_config, PipelineConfig};
 use std::{env, path::{Path, PathBuf}, process, fs};
 
 fn main() {
@@ -68,7 +68,7 @@ fn main() {
 
         eprint!("[{}/{}] Processing {}... ", i + 1, image_files.len(), filename);
 
-        match analyze_swatch_debug(image_path) {
+        match analyze_swatch_debug_with_config(image_path, &config) {
             Ok((result, debug_output)) => {
                 // Save debug artifacts
                 let base_name = image_path.file_stem()

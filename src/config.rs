@@ -184,7 +184,7 @@ impl PipelineConfig {
             swatch_detection: SwatchDetectionConfig {
                 min_delta_e: 15.0,
                 min_area_ratio: 0.10,
-                max_area_ratio: 0.80,
+                max_area_ratio: 0.90,
                 morph_kernel_size: 3,
                 boundary_erosion: 2,
             },

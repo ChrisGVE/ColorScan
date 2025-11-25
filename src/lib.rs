@@ -270,14 +270,15 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
     })
 }
 
-/// Analyze a fountain pen ink swatch with debug output
+/// Analyze a fountain pen ink swatch with configuration and debug output
 ///
-/// This function performs the same analysis as `analyze_swatch` but also returns
-/// intermediate processing images for debugging and visualization.
+/// This function performs the full analysis pipeline using parameters from the config
+/// and returns intermediate processing images for debugging and validation.
 ///
 /// # Arguments
 ///
 /// * `image_path` - Path to the image file
+/// * `config` - Pipeline configuration with all tunable parameters
 ///
 /// # Returns
 ///
@@ -285,8 +286,8 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
 ///
 /// # Errors
 ///
-/// Returns `AnalysisError` if analysis fails (same as `analyze_swatch`)
-pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutput)> {
+/// Returns `AnalysisError` if analysis fails
+pub fn analyze_swatch_debug_with_config(image_path: &Path, config: &PipelineConfig) -> Result<(ColorResult, DebugOutput)> {
     use crate::exif::extractor::ExifExtractor;
     use crate::detection::{PaperDetector, SwatchDetector};
     use crate::calibration::white_balance::WhiteBalanceEstimator;
@@ -310,44 +311,70 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
     let _metadata = ExifExtractor::extract_color_metadata(image_path)
         .ok(); // Ignore errors, EXIF is optional
 
-    // Apply EXIF orientation correction if available
-    image = apply_exif_orientation(image, image_path)?;
+    // Apply EXIF orientation correction if configured
+    if config.preprocessing.exif_correction {
+        image = apply_exif_orientation(image, image_path)?;
+    }
 
     // Clone original image for debug output (after orientation, before processing)
     let original_image = image.clone();
 
-    // Step 3: Detect paper region and rectify perspective
-    let paper_detector = PaperDetector::new();
+    // Step 3: Detect paper region and rectify perspective (with config params)
+    let paper_detector = PaperDetector::with_params(
+        config.paper_detection.min_area_ratio,
+        config.paper_detection.max_rectification_angle,
+        config.paper_detection.poly_approx_epsilon,
+    );
     let paper_result = paper_detector.detect(&image)?;
 
-    // Step 4: Estimate white balance from paper region
-    let wb_estimator = WhiteBalanceEstimator::new();
-    let paper_color = wb_estimator.estimate_from_paper(
-        &paper_result.rectified_image,
-        &paper_result.foreign_object_mask,
-    )?;
+    // Step 4: Apply white balance correction if configured
+    let corrected_image = if config.preprocessing.white_balance.enabled {
+        let wb_estimator = WhiteBalanceEstimator::new();
+        let paper_color = wb_estimator.estimate_from_paper(
+            &paper_result.rectified_image,
+            &paper_result.foreign_object_mask,
+        )?;
+        wb_estimator.apply_correction(&paper_result.rectified_image, paper_color)?
+    } else {
+        paper_result.rectified_image.clone()
+    };
 
-    // Step 4b: Apply white balance correction
-    let corrected_image = wb_estimator.apply_correction(&paper_result.rectified_image, paper_color)?;
+    // After white balance correction, paper should match target color
+    let target_paper_lab: Lab = config.preprocessing.white_balance.target_paper.clone().into();
 
-    // After white balance correction, paper should be neutral white under D65
-    let corrected_paper_color = Lab::new(95.0, 0.0, 0.0);
-
-    // Step 5: Detect ink swatch region (using corrected image and corrected paper color)
-    let swatch_detector = SwatchDetector::new();
+    // Step 5: Detect ink swatch region (with config params)
+    let swatch_detector = SwatchDetector::with_params(
+        config.swatch_detection.min_delta_e,
+        config.swatch_detection.min_area_ratio,
+        config.swatch_detection.max_area_ratio,
+    );
     let swatch_result = swatch_detector.detect(
         &corrected_image,
         &paper_result.foreign_object_mask,
-        corrected_paper_color,
+        target_paper_lab,
     )?;
 
-    // Step 6: Extract representative color from swatch (using corrected image and corrected paper color)
-    let color_analyzer = ColorAnalyzer::new();
+    // Step 6: Extract representative color from swatch (with config params)
+    let color_analyzer = ColorAnalyzer::with_params(
+        config.color_extraction.min_ink_delta_e,
+        config.color_extraction.outlier_percentile_low,
+        config.color_extraction.outlier_percentile_high,
+    );
+
+    // Parse extraction method from config
+    let method = match config.color_extraction.method.as_str() {
+        "MedianMean" => crate::color::ExtractionMethod::MedianMean,
+        "Darkest" => crate::color::ExtractionMethod::Darkest,
+        "MostSaturated" => crate::color::ExtractionMethod::MostSaturated,
+        "Mode" => crate::color::ExtractionMethod::Mode,
+        _ => crate::color::ExtractionMethod::MedianMean, // Default fallback
+    };
+
     let color_analysis = color_analyzer.extract_color(
         &corrected_image,
         &swatch_result.swatch_mask,
-        corrected_paper_color,
-        crate::color::ExtractionMethod::MedianMean,
+        target_paper_lab,
+        method,
     )?;
 
     // Step 7: Convert to multiple color spaces
@@ -359,7 +386,7 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
     // Step 8: Convert to Munsell notation and ISCC-NBS color names
     let (munsell, color_name, tone) = srgb_to_munsell_and_names(srgb);
 
-    // Step 9: Extract swatch fragment for debug output (using corrected image)
+    // Step 9: Extract swatch fragment for debug output
     let swatch_fragment = extract_swatch_fragment(&corrected_image, &swatch_result.swatch_mask)?;
 
     // Step 10: Return results and debug output
@@ -382,6 +409,27 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
     };
 
     Ok((color_result, debug_output))
+}
+
+/// Analyze a fountain pen ink swatch with debug output (using default config)
+///
+/// This function performs the same analysis as `analyze_swatch` but also returns
+/// intermediate processing images for debugging and visualization.
+///
+/// # Arguments
+///
+/// * `image_path` - Path to the image file
+///
+/// # Returns
+///
+/// A tuple of (`ColorResult`, `DebugOutput`) containing color analysis and debug images
+///
+/// # Errors
+///
+/// Returns `AnalysisError` if analysis fails (same as `analyze_swatch`)
+pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutput)> {
+    let config = PipelineConfig::default_experiment_0();
+    analyze_swatch_debug_with_config(image_path, &config)
 }
 
 /// Extract the swatch fragment from the rectified image using the mask
