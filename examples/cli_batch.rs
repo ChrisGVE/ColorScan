@@ -57,30 +57,44 @@ fn main() {
     eprintln!("Found {} image files to process", image_files.len());
     eprintln!();
 
-    // Process each image
+    // Process each image and track results for CSV
     let mut success_count = 0;
     let mut error_count = 0;
+    let mut csv_records: Vec<String> = Vec::new();
+
+    // CSV header
+    csv_records.push("sample_name,hex,munsell,color_name,confidence,error".to_string());
 
     for (i, image_path) in image_files.iter().enumerate() {
         let filename = image_path.file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
 
+        let base_name = image_path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output");
+
         eprint!("[{}/{}] Processing {}... ", i + 1, image_files.len(), filename);
 
         match analyze_swatch_debug_with_config(image_path, &config) {
             Ok((result, debug_output)) => {
                 // Save debug artifacts
-                let base_name = image_path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("output");
-
                 if let Err(e) = save_debug_output(&debug_output, &config.output_path, base_name) {
                     eprintln!("Warning saving artifacts: {}", e);
                 }
 
                 eprintln!("✓");
                 success_count += 1;
+
+                // Add to CSV (no error)
+                csv_records.push(format!(
+                    "{},{},{},{},{:.3},",
+                    base_name,
+                    result.hex,
+                    result.munsell,
+                    result.color_name,
+                    result.confidence
+                ));
 
                 // Optionally print result summary
                 if env::var("VERBOSE").is_ok() {
@@ -89,10 +103,27 @@ fn main() {
                 }
             }
             Err(error) => {
-                eprintln!("✗ {}", error);
+                let error_msg = error.to_string();
+                eprintln!("✗ {}", error_msg);
                 error_count += 1;
+
+                // Add to CSV with error description
+                csv_records.push(format!(
+                    "{},,,,0.0,\"{}\"",
+                    base_name,
+                    error_msg.replace("\"", "\"\"") // Escape quotes for CSV
+                ));
             }
         }
+    }
+
+    // Save CSV results
+    let csv_path = config.output_path.parent().unwrap_or(config.output_path.as_path()).join("results.csv");
+    if let Err(e) = fs::write(&csv_path, csv_records.join("\n")) {
+        eprintln!("Warning: Failed to write CSV results: {}", e);
+    } else {
+        eprintln!();
+        eprintln!("CSV results saved to: {}", csv_path.display());
     }
 
     eprintln!();
@@ -101,9 +132,8 @@ fn main() {
     eprintln!("  Errors: {}", error_count);
     eprintln!("  Artifacts saved to: {}", config.output_path.display());
 
-    if error_count > 0 {
-        process::exit(1);
-    }
+    // Don't exit with error code for processing failures - only for code errors
+    // This allows downstream tools to analyze successful samples
 }
 
 fn print_help(program_name: &str) {
