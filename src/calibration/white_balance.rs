@@ -4,8 +4,19 @@
 //! white balance correction to normalize colors to D65 standard.
 
 use crate::error::{AnalysisError, Result};
-use opencv::{core::Mat, prelude::*};
+use opencv::{core::Mat, prelude::*, core::Rect};
 use palette::{Lab, Srgb, IntoColor, white_point::D65};
+
+/// Paper band white balance estimation result
+#[derive(Debug, Clone)]
+pub struct PaperBandEstimation {
+    /// Estimated paper color in Lab space
+    pub paper_color: Lab<D65>,
+    /// Number of valid pixels used for estimation
+    pub pixel_count: usize,
+    /// Confidence score (0.0-1.0)
+    pub confidence: f32,
+}
 
 /// White balance estimator using multiple algorithms
 pub struct WhiteBalanceEstimator {
@@ -15,6 +26,8 @@ pub struct WhiteBalanceEstimator {
     /// Whether to use learning-based estimation
     #[allow(dead_code)]
     use_learning_based: bool,
+    /// Paper band width as fraction of distance to image border (default: 0.2)
+    pub paper_band_width: f64,
 }
 
 impl WhiteBalanceEstimator {
@@ -23,7 +36,168 @@ impl WhiteBalanceEstimator {
         Self {
             use_gray_world: true,
             use_learning_based: false, // Requires OpenCV contrib modules
+            paper_band_width: 0.2, // 20% of distance to border
         }
+    }
+
+    /// Estimate paper color from sampling band around detected rectangle
+    ///
+    /// Implements the adaptive white point estimation from the swatch-first
+    /// detection algorithm. Samples pixels in a band located midway between
+    /// the detected rectangle and image borders.
+    ///
+    /// # Arguments
+    ///
+    /// * `image` - Input image in BGR format
+    /// * `rect_bounds` - Bounding box of detected rectangle (paper or swatch)
+    ///
+    /// # Returns
+    ///
+    /// `PaperBandEstimation` with estimated paper color and confidence
+    pub fn estimate_from_paper_band(
+        &self,
+        image: &Mat,
+        rect_bounds: Rect,
+    ) -> Result<PaperBandEstimation> {
+        let img_width = image.cols() as f64;
+        let img_height = image.rows() as f64;
+
+        // Calculate midpoints between rectangle and image borders
+        let band_left = (rect_bounds.x as f64 / 2.0) as i32;
+        let band_right = ((rect_bounds.x + rect_bounds.width) as f64 + img_width) / 2.0;
+        let band_top = (rect_bounds.y as f64 / 2.0) as i32;
+        let band_bottom = ((rect_bounds.y + rect_bounds.height) as f64 + img_height) / 2.0;
+
+        // Calculate band widths (percentage of distance)
+        let left_distance = rect_bounds.x as f64;
+        let right_distance = img_width - (rect_bounds.x + rect_bounds.width) as f64;
+        let top_distance = rect_bounds.y as f64;
+        let bottom_distance = img_height - (rect_bounds.y + rect_bounds.height) as f64;
+
+        let left_band_width = (left_distance * self.paper_band_width) as i32;
+        let right_band_width = (right_distance * self.paper_band_width) as i32;
+        let top_band_height = (top_distance * self.paper_band_width) as i32;
+        let bottom_band_height = (bottom_distance * self.paper_band_width) as i32;
+
+        // Convert image to Lab for filtering
+        let mut lab_image = Mat::default();
+        opencv::imgproc::cvt_color(
+            image,
+            &mut lab_image,
+            opencv::imgproc::COLOR_BGR2Lab,
+            0,
+            opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT,
+        )
+        .map_err(|e| AnalysisError::ProcessingError(format!("Lab conversion failed: {}", e)))?;
+
+        // Extract pixels from 4 sampling bands
+        let mut paper_pixels: Vec<Lab<D65>> = Vec::new();
+
+        // Left band
+        if left_band_width > 0 {
+            let x_start = (band_left - left_band_width / 2).max(0);
+            let x_end = (band_left + left_band_width / 2).min(image.cols());
+            self.extract_band_pixels(&lab_image, x_start, x_end, 0, image.rows(), &mut paper_pixels)?;
+        }
+
+        // Right band
+        if right_band_width > 0 {
+            let x_start = (band_right as i32 - right_band_width / 2).max(0);
+            let x_end = (band_right as i32 + right_band_width / 2).min(image.cols());
+            self.extract_band_pixels(&lab_image, x_start, x_end, 0, image.rows(), &mut paper_pixels)?;
+        }
+
+        // Top band
+        if top_band_height > 0 {
+            let y_start = (band_top - top_band_height / 2).max(0);
+            let y_end = (band_top + top_band_height / 2).min(image.rows());
+            self.extract_band_pixels(&lab_image, 0, image.cols(), y_start, y_end, &mut paper_pixels)?;
+        }
+
+        // Bottom band
+        if bottom_band_height > 0 {
+            let y_start = (band_bottom as i32 - bottom_band_height / 2).max(0);
+            let y_end = (band_bottom as i32 + bottom_band_height / 2).min(image.rows());
+            self.extract_band_pixels(&lab_image, 0, image.cols(), y_start, y_end, &mut paper_pixels)?;
+        }
+
+        if paper_pixels.is_empty() {
+            return Err(AnalysisError::ProcessingError(
+                "No valid pixels found in paper sampling band".into()
+            ));
+        }
+
+        // Compute median Lab (robust to outliers)
+        let mut l_values: Vec<f32> = paper_pixels.iter().map(|p| p.l).collect();
+        let mut a_values: Vec<f32> = paper_pixels.iter().map(|p| p.a).collect();
+        let mut b_values: Vec<f32> = paper_pixels.iter().map(|p| p.b).collect();
+
+        l_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        a_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        b_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let l_median = l_values[l_values.len() / 2];
+        let a_median = a_values[a_values.len() / 2];
+        let b_median = b_values[b_values.len() / 2];
+
+        let paper_color = Lab::new(l_median, a_median, b_median);
+
+        // Compute confidence based on pixel count and color variance
+        let pixel_count = paper_pixels.len();
+        let chroma = (a_median * a_median + b_median * b_median).sqrt();
+
+        // Higher confidence: more pixels, lower chroma (more neutral paper)
+        let confidence = if pixel_count >= 1000 && chroma < 10.0 {
+            0.9
+        } else if pixel_count >= 500 && chroma < 20.0 {
+            0.7
+        } else if pixel_count >= 100 {
+            0.5
+        } else {
+            0.3
+        };
+
+        Ok(PaperBandEstimation {
+            paper_color,
+            pixel_count,
+            confidence,
+        })
+    }
+
+    /// Extract and filter pixels from a rectangular region
+    fn extract_band_pixels(
+        &self,
+        lab_image: &Mat,
+        x_start: i32,
+        x_end: i32,
+        y_start: i32,
+        y_end: i32,
+        pixels: &mut Vec<Lab<D65>>,
+    ) -> Result<()> {
+        for row in y_start..y_end {
+            for col in x_start..x_end {
+                let pixel = lab_image.at_2d::<opencv::core::Vec3b>(row, col)
+                    .map_err(|e| AnalysisError::ProcessingError(format!("Pixel access failed: {}", e)))?;
+
+                // Convert OpenCV Lab [0-255] to palette Lab
+                let l = (pixel[0] as f32) * 100.0 / 255.0;
+                let a = (pixel[1] as f32) - 128.0;
+                let b = (pixel[2] as f32) - 128.0;
+
+                // Filter overexposed pixels (L* > 98, very close to #FFFFFF)
+                if l > 98.0 {
+                    continue;
+                }
+
+                // Filter shadowed pixels (L* < 40, deep shadows)
+                if l < 40.0 {
+                    continue;
+                }
+
+                pixels.push(Lab::new(l, a, b));
+            }
+        }
+        Ok(())
     }
 
     /// Estimate paper color from paper region
