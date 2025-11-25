@@ -299,6 +299,142 @@ DECISION POINTS:
 - 10-80% area range chosen based on practical fountain pen photography
 ```
 
+### Swatch-First Detection with Adaptive White Point Estimation
+
+**Tag**: `algo-swatch-first-adaptive-wb`
+**Created**: 2025-11-25
+**Last Modified**: 2025-11-25
+**Purpose**: Unified detection strategy that works whether algorithm finds paper card or swatch, with adaptive white point estimation from paper sampling band
+**Performance Requirements**: <50ms total processing time, handles 15-30% swatch area range
+**Commit**: [TBD - implementation pending]
+
+```
+ALGORITHM: Swatch-First Detection with Adaptive White Point Estimation
+INPUT: RGB image from smartphone camera (after EXIF orientation correction)
+OUTPUT: White-balance corrected full image, swatch coordinates, swatch mask with transparency, paper band color characterization (optional)
+
+RATIONALE:
+Current paper detection algorithm reliably finds the strongest rectangular contour in the image.
+For images with large swatches (15-30% of frame), this is often the swatch boundary (high-contrast
+dark ink vs light paper) rather than paper card boundary (low-contrast white card vs background).
+Instead of trying to fix this, we embrace it: use the detected rectangle (paper OR swatch) as
+input to adaptive white point estimation from the surrounding paper region.
+
+STEPS:
+1. Initial rectangular detection (agnostic to classification):
+   - Use existing Canny edge detection + contour finding algorithm
+   - Apply area filtering (≥5%), aspect ratio filtering (0.33-3.0)
+   - Score by 70% area + 30% centrality
+   - Result: coordinates of strongest rectangle (could be paper card or swatch)
+   - No need to classify whether this is "paper" or "swatch"
+
+2. Define paper sampling band:
+   - Calculate midpoint between rectangle borders and image borders:
+     * band_left = (rect_left + 0) / 2
+     * band_right = (rect_right + image_width) / 2
+     * band_top = (rect_top + 0) / 2
+     * band_bottom = (rect_bottom + image_height) / 2
+   - Define band width as percentage of distance (e.g., 20% on each side)
+   - This creates 4 rectangular sampling regions around the detected rectangle
+   - Sampling band captures paper region whether rect is full card or just swatch
+
+3. Adaptive white point estimation:
+   - Extract all pixels within paper sampling band regions
+   - Convert to Lab color space
+   - Filter overexposed pixels:
+     * Remove pixels with RGB values (255, 255, 255) or very close (L* > 98)
+     * These are specular reflections, not paper surface
+   - Filter shadowed pixels:
+     * Remove pixels with L* < 40 (deep shadows not representative of paper)
+   - Compute robust statistics on remaining pixels:
+     * Median L*, a*, b* values (robust to outliers)
+     * Check color variance to assess confidence
+   - White point = median Lab of paper band
+   - Confidence based on:
+     * Number of valid pixels (more = higher confidence)
+     * Color variance (lower = higher confidence)
+     * Neutrality check (paper should have low chroma)
+
+4. White balance correction:
+   - Calculate offset from target paper color:
+     * target = (L*=95, a*=0, b*=0) [neutral white]
+     * offset_L = target_L - measured_L
+     * offset_a = target_a - measured_a
+     * offset_b = target_b - measured_b
+   - Apply correction to ENTIRE original image:
+     * Convert full image to Lab
+     * Add offsets: L* += offset_L, a* += offset_a, b* += offset_b
+     * Clip to valid ranges
+     * Convert back to RGB
+   - Result: full-frame corrected image (not cropped)
+
+5. Swatch extraction:
+   - Use rectangle coordinates from step 1 (already known)
+   - If rectangle is significantly smaller than image (< 50% area):
+     * Assume rectangle = swatch boundary, use directly
+   - If rectangle is close to full image (≥ 50% area):
+     * Assume rectangle = paper card
+     * Run color-based swatch detection on corrected image
+     * Use ΔE thresholding against corrected paper color
+   - Extract swatch region pixels
+
+6. High-luminance masking:
+   - Within swatch region, identify high-luminance pixels:
+     * L* > 90 in corrected image (likely paper showing through)
+     * Or pixels very close to paper color (ΔE < 5)
+   - Convert these pixels to alpha channel (transparency)
+   - Result: swatch fragment with transparent regions for paper areas
+
+7. Paper band color characterization (future use):
+   - Extract narrow band (2-5 pixels) around final swatch boundary
+   - Filter high-chroma pixels (C* > 20, likely ink traces)
+   - Compute band color statistics:
+     * Mean L*, a*, b*
+     * Chroma and hue if non-neutral
+   - Store for potential correction of non-white card influence
+   - NOT applied in current implementation (white cards assumed)
+
+EDGE CASES:
+- Very large swatch (> 30% of frame):
+  * Paper sampling band may be very narrow
+  * Increase band width adaptively
+  * Require minimum 500 pixels for reliable estimation
+- Very small swatch (< 10% of frame):
+  * Rectangle likely detects paper card correctly
+  * Use standard swatch detection on corrected image
+- Overexposed paper (flash photography):
+  * High-luminance filtering removes most pixels
+  * Fallback to EXIF-based white balance if < 100 valid pixels
+  * Flag low confidence
+- Colored backgrounds:
+  * Paper sampling band may include background
+  * Use centrality weighting (pixels closer to rectangle more reliable)
+  * Check for bimodal distribution in band colors
+- No clear rectangle detected:
+  * Fallback to whole-image white balance estimation
+  * Use EXIF data if available
+  * Warn user about potential inaccuracy
+
+PERFORMANCE OPTIMIZATIONS:
+- Only convert paper sampling band to Lab (not full image initially)
+- Use vectorized operations for filtering and statistics
+- Cache Lab conversion of full image for reuse
+- Parallelize band sampling (4 independent rectangular regions)
+
+DECISION POINTS:
+- User proposed swatch-first strategy after observing "bug as feature" (2025-11-25)
+- User confirmed swatches are 15-17% of successful images, so area threshold won't solve issue
+- User approved assumption that ink swatch not obstructed by transparent materials
+- User suggested paper band characterization for future non-white card support
+- Midpoint band strategy chosen to work for both paper-detected and swatch-detected cases
+- 20% band width chosen as initial value (may need tuning based on experiments)
+
+COMPARISON WITH PREVIOUS APPROACH:
+Previous: Detect paper → rectify → estimate WB from rectified paper → fail if detected swatch
+New: Detect rectangle → sample surrounding paper → estimate WB → extract swatch using known coords
+Advantage: Works whether rectangle is paper or swatch, no cascade failure
+```
+
 ### CIEDE2000 Color Difference
 
 **Tag**: `algo-ciede2000-delta-e`
