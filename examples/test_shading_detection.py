@@ -806,7 +806,7 @@ def process_samples_with_cli(config_path):
             ["cargo", "run", "--release", "--example", "cli_batch", "--", str(config_path)],
             capture_output=False,  # Show progress to user
             text=True,
-            timeout=600  # 10 minutes for batch processing
+            timeout=1800  # 30 minutes for batch processing (199 samples)
         )
 
         if result.returncode != 0:
