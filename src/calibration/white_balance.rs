@@ -184,13 +184,12 @@ impl WhiteBalanceEstimator {
                 let a = (pixel[1] as f32) - 128.0;
                 let b = (pixel[2] as f32) - 128.0;
 
-                // Filter overexposed pixels (L* > 98, very close to #FFFFFF)
-                if l > 98.0 {
-                    continue;
-                }
-
-                // Filter shadowed pixels (L* < 40, deep shadows)
-                if l < 40.0 {
+                // Filter overexposed pixels (L* > 99, clipped highlights)
+                // Note: We don't filter low L* values because:
+                // 1. Median is robust to outliers
+                // 2. Background/desk may be dark-colored
+                // 3. User constraint: no conditions on input image
+                if l > 99.0 {
                     continue;
                 }
 

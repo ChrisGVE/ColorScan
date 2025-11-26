@@ -2,6 +2,7 @@
 //!
 //! Implements adaptive paper detection that:
 //! - Detects paper/card surface boundaries
+//! - Filters candidates by interior color (paper = high L*, low chroma)
 //! - Identifies and masks foreign objects (tape, rulers, weights)
 //! - Computes homography for perspective rectification
 //! - Returns rectified image suitable for color analysis
@@ -9,7 +10,7 @@
 //! Algorithm tag: `algo-adaptive-paper-detection`
 
 use opencv::{
-    core::{Mat, Point2f, Point, Scalar, Size, Vector, BORDER_CONSTANT},
+    core::{Mat, Point2f, Point, Rect, Scalar, Size, Vector, BORDER_CONSTANT},
     imgproc::{
         approx_poly_dp, arc_length, find_contours, get_perspective_transform,
         warp_perspective, gaussian_blur,
@@ -39,6 +40,19 @@ const MIN_CARD_ASPECT_RATIO: f64 = 0.33; // 1:3
 /// Maximum aspect ratio for valid card (excludes very elongated rulers)
 /// Cards are typically 1:1.3 to 1:2, so we use 3:1 as maximum
 const MAX_CARD_ASPECT_RATIO: f64 = 3.0; // 3:1
+
+/// Minimum L* (lightness) for paper in OpenCV Lab scale (0-255)
+/// Paper should be light colored: L* > 80 in standard scale = ~204 in OpenCV
+const MIN_PAPER_LIGHTNESS: f64 = 180.0; // ~70 in standard L* scale
+
+/// Maximum chroma for paper (distance from neutral axis in a*b* plane)
+/// Paper should be neutral/white: low chroma
+/// OpenCV Lab: a* and b* centered at 128, so chroma = sqrt((a-128)^2 + (b-128)^2)
+const MAX_PAPER_CHROMA: f64 = 30.0; // Allows slightly tinted paper
+
+/// Sampling margin from bounding rect edges (as fraction of dimension)
+/// Avoids sampling edge pixels which may include background
+const INTERIOR_SAMPLE_MARGIN: f64 = 0.15;
 
 /// Paper detection result with rectification data
 #[derive(Debug, Clone)]
@@ -192,7 +206,10 @@ impl PaperDetector {
         Ok(dilated)
     }
 
-    /// Find paper contour from edge image
+    /// Find paper contour from edge image using two-stage detection:
+    /// 1. Find ALL candidate rectangles meeting geometric requirements
+    /// 2. Filter by interior color (paper = high L*, low chroma)
+    /// 3. Select largest paper-colored candidate
     fn find_paper_contour_from_edges(&self, edges: &Mat, original_image: &Mat) -> Result<VectorOfPoint> {
         let mut contours = Vector::<VectorOfPoint>::new();
         find_contours(edges, &mut contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE, Point::new(0, 0))
@@ -205,16 +222,19 @@ impl PaperDetector {
         let image_area = (original_image.rows() * original_image.cols()) as f64;
         let min_area = image_area * self.min_area_ratio;
 
-        // Find largest rectangular contour that meets area requirement
-        // and excludes elongated rulers based on aspect ratio
-        // Prioritize contours that are more centrally located
-        let mut best_contour: Option<VectorOfPoint> = None;
-        let mut best_score = 0.0;
-
         let img_width = original_image.cols() as f64;
         let img_height = original_image.rows() as f64;
         let img_center_x = img_width / 2.0;
         let img_center_y = img_height / 2.0;
+
+        // Stage 1: Collect ALL candidate contours that pass geometric filters
+        struct Candidate {
+            contour: VectorOfPoint,
+            area: f64,
+            bounding_rect: Rect,
+            centrality: f64,
+        }
+        let mut candidates: Vec<Candidate> = Vec::new();
 
         for i in 0..contours.len() {
             let contour = contours.get(i)
@@ -231,9 +251,8 @@ impl PaperDetector {
             approx_poly_dp(&contour, &mut approx, epsilon, true)
                 .map_err(|e| AnalysisError::ProcessingError(format!("Polygon approximation failed: {}", e)))?;
 
-            // Only consider 4-sided polygons (rectangles/quadrilaterals)
+            // Only consider 4-sided polygons (rectangles/quadrilaterals) with sufficient area
             if approx.len() == 4 && area >= min_area {
-                // Check aspect ratio to exclude rulers
                 let bounding_rect = opencv::imgproc::bounding_rect(&contour)
                     .map_err(|e| AnalysisError::ProcessingError(format!("Bounding rect failed: {}", e)))?;
 
@@ -242,36 +261,68 @@ impl PaperDetector {
                 let aspect_ratio = width / height;
 
                 // Exclude very elongated rectangles (rulers)
-                // Cards have aspect ratio between 1:3 and 3:1
                 if aspect_ratio >= MIN_CARD_ASPECT_RATIO && aspect_ratio <= MAX_CARD_ASPECT_RATIO {
-                    // Calculate centrality score: prefer contours closer to image center
+                    // Calculate centrality score
                     let rect_center_x = (bounding_rect.x as f64) + (width / 2.0);
                     let rect_center_y = (bounding_rect.y as f64) + (height / 2.0);
-
                     let distance_from_center = ((rect_center_x - img_center_x).powi(2) +
                                                (rect_center_y - img_center_y).powi(2)).sqrt();
-
-                    // Normalize distance by diagonal
                     let img_diagonal = (img_width.powi(2) + img_height.powi(2)).sqrt();
                     let centrality = 1.0 - (distance_from_center / img_diagonal);
 
-                    // Score combines area and centrality (70% area, 30% centrality)
-                    let score = (area / image_area) * 0.7 + centrality * 0.3;
-
-                    if score > best_score {
-                        best_score = score;
-                        best_contour = Some(contour);
-                    }
+                    candidates.push(Candidate {
+                        contour,
+                        area,
+                        bounding_rect,
+                        centrality,
+                    });
                 }
             }
         }
 
-        // If no contour found, return error (will trigger fallback in detect())
-        best_contour.ok_or_else(|| {
-            AnalysisError::NoSwatchDetected(
+        if candidates.is_empty() {
+            return Err(AnalysisError::NoSwatchDetected(
                 format!("No rectangular paper region found (minimum {}% of image area required)", self.min_area_ratio * 100.0)
-            )
-        })
+            ));
+        }
+
+        // Stage 2: Filter candidates by interior color (paper should be light and neutral)
+        let mut paper_candidates: Vec<&Candidate> = Vec::new();
+        let mut fallback_candidate: Option<&Candidate> = None;
+        let mut fallback_score = 0.0;
+
+        for candidate in &candidates {
+            // Check interior color
+            let (is_paper, _avg_l, _chroma) = self.check_interior_is_paper(original_image, &candidate.bounding_rect)?;
+
+            if is_paper {
+                paper_candidates.push(candidate);
+            }
+
+            // Track best fallback (largest + central) in case no paper-colored candidate
+            let score = (candidate.area / image_area) * 0.7 + candidate.centrality * 0.3;
+            if score > fallback_score {
+                fallback_score = score;
+                fallback_candidate = Some(candidate);
+            }
+        }
+
+        // Stage 3: Select best paper-colored candidate (largest area wins)
+        if !paper_candidates.is_empty() {
+            // Sort by area descending
+            paper_candidates.sort_by(|a, b| b.area.partial_cmp(&a.area).unwrap());
+            return Ok(paper_candidates[0].contour.clone());
+        }
+
+        // Fallback: If no paper-colored candidate found, use best geometric match
+        // This handles edge cases where lighting makes paper appear darker
+        if let Some(fallback) = fallback_candidate {
+            return Ok(fallback.contour.clone());
+        }
+
+        Err(AnalysisError::NoSwatchDetected(
+            format!("No rectangular paper region found (minimum {}% of image area required)", self.min_area_ratio * 100.0)
+        ))
     }
 
     /// Create a contour representing the entire image (fallback for low-contrast cards)
@@ -459,6 +510,104 @@ impl PaperDetector {
         let confidence = (0.3 * compactness + 0.4 * size_ratio + 0.3 * corner_score) as f32;
 
         Ok(confidence.clamp(0.0, 1.0))
+    }
+
+    /// Sample interior color of a bounding rectangle and check if it looks like paper
+    /// Returns (is_paper_like, avg_lightness, chroma)
+    fn check_interior_is_paper(&self, image: &Mat, bounding_rect: &Rect) -> Result<(bool, f64, f64)> {
+        // Calculate interior sampling region (with margin to avoid edges)
+        let margin_x = (bounding_rect.width as f64 * INTERIOR_SAMPLE_MARGIN) as i32;
+        let margin_y = (bounding_rect.height as f64 * INTERIOR_SAMPLE_MARGIN) as i32;
+
+        let inner_x = bounding_rect.x + margin_x;
+        let inner_y = bounding_rect.y + margin_y;
+        let inner_w = bounding_rect.width - 2 * margin_x;
+        let inner_h = bounding_rect.height - 2 * margin_y;
+
+        // Ensure valid dimensions
+        if inner_w <= 0 || inner_h <= 0 {
+            return Ok((false, 0.0, 0.0));
+        }
+
+        // Clamp to image bounds
+        let img_w = image.cols();
+        let img_h = image.rows();
+        let x1 = inner_x.max(0).min(img_w - 1);
+        let y1 = inner_y.max(0).min(img_h - 1);
+        let x2 = (inner_x + inner_w).max(0).min(img_w);
+        let y2 = (inner_y + inner_h).max(0).min(img_h);
+
+        if x2 <= x1 || y2 <= y1 {
+            return Ok((false, 0.0, 0.0));
+        }
+
+        // Convert to Lab color space
+        let mut lab_image = Mat::default();
+        opencv::imgproc::cvt_color(image, &mut lab_image, opencv::imgproc::COLOR_BGR2Lab, 0, opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT)
+            .map_err(|e| AnalysisError::ProcessingError(format!("Lab conversion failed: {}", e)))?;
+
+        // Extract ROI
+        let roi = Mat::roi(&lab_image, Rect::new(x1, y1, x2 - x1, y2 - y1))
+            .map_err(|e| AnalysisError::ProcessingError(format!("ROI extraction failed: {}", e)))?;
+
+        // Sample pixels from interior (use corners and center for efficiency)
+        let sample_positions = [
+            (0.25, 0.25), // top-left quadrant
+            (0.75, 0.25), // top-right quadrant
+            (0.25, 0.75), // bottom-left quadrant
+            (0.75, 0.75), // bottom-right quadrant
+            (0.5, 0.5),   // center
+        ];
+
+        let roi_w = roi.cols();
+        let roi_h = roi.rows();
+
+        let mut l_sum = 0.0;
+        let mut a_sum = 0.0;
+        let mut b_sum = 0.0;
+        let mut count = 0;
+
+        for (fx, fy) in sample_positions {
+            let px = ((roi_w as f64) * fx) as i32;
+            let py = ((roi_h as f64) * fy) as i32;
+
+            if px >= 0 && px < roi_w && py >= 0 && py < roi_h {
+                // Sample a small region around this point (3x3 or 5x5)
+                let half_size = 2;
+                let sx1 = (px - half_size).max(0);
+                let sy1 = (py - half_size).max(0);
+                let sx2 = (px + half_size + 1).min(roi_w);
+                let sy2 = (py + half_size + 1).min(roi_h);
+
+                for sy in sy1..sy2 {
+                    for sx in sx1..sx2 {
+                        let pixel = roi.at_2d::<opencv::core::Vec3b>(sy, sx)
+                            .map_err(|e| AnalysisError::ProcessingError(format!("Pixel access failed: {}", e)))?;
+                        l_sum += pixel[0] as f64;
+                        a_sum += pixel[1] as f64;
+                        b_sum += pixel[2] as f64;
+                        count += 1;
+                    }
+                }
+            }
+        }
+
+        if count == 0 {
+            return Ok((false, 0.0, 0.0));
+        }
+
+        let avg_l = l_sum / count as f64;
+        let avg_a = a_sum / count as f64;
+        let avg_b = b_sum / count as f64;
+
+        // Calculate chroma (distance from neutral axis)
+        // OpenCV Lab: a* and b* are centered at 128
+        let chroma = ((avg_a - 128.0).powi(2) + (avg_b - 128.0).powi(2)).sqrt();
+
+        // Check if interior looks like paper: high lightness, low chroma
+        let is_paper = avg_l >= MIN_PAPER_LIGHTNESS && chroma <= MAX_PAPER_CHROMA;
+
+        Ok((is_paper, avg_l, chroma))
     }
 }
 

@@ -2,7 +2,7 @@
 //!
 //! Processes all images in a directory using a JSON configuration file
 
-use scan_colors::{analyze_swatch_debug_with_config, PipelineConfig};
+use scan_colors::{analyze_swatch_debug_with_config, analyze_swatch_first_with_config, PipelineConfig};
 use std::{env, path::{Path, PathBuf}, process, fs};
 
 fn main() {
@@ -32,6 +32,11 @@ fn main() {
     eprintln!("Loaded configuration from {}", config_path.display());
     eprintln!("Input path: {}", config.input_path.display());
     eprintln!("Output path: {}", config.output_path.display());
+    if config.preprocessing.swatch_first_mode {
+        eprintln!("Pipeline mode: SWATCH-FIRST (WB from paper band)");
+    } else {
+        eprintln!("Pipeline mode: STANDARD (crop to detected region)");
+    }
     eprintln!();
 
     // Create output directory
@@ -76,7 +81,14 @@ fn main() {
 
         eprint!("[{}/{}] Processing {}... ", i + 1, image_files.len(), filename);
 
-        match analyze_swatch_debug_with_config(image_path, &config) {
+        // Use swatch-first pipeline if enabled, otherwise standard pipeline
+        let analysis_result = if config.preprocessing.swatch_first_mode {
+            analyze_swatch_first_with_config(image_path, &config)
+        } else {
+            analyze_swatch_debug_with_config(image_path, &config)
+        };
+
+        match analysis_result {
             Ok((result, debug_output)) => {
                 // Save debug artifacts
                 if let Err(e) = save_debug_output(&debug_output, &config.output_path, base_name) {

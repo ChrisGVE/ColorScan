@@ -432,6 +432,280 @@ pub fn analyze_swatch_debug(image_path: &Path) -> Result<(ColorResult, DebugOutp
     analyze_swatch_debug_with_config(image_path, &config)
 }
 
+/// Analyze using the swatch-first approach
+///
+/// This pipeline handles cases where rectangle detection finds the swatch
+/// rather than the paper card. It estimates white balance from the paper band
+/// OUTSIDE the detected rectangle, applies WB to the full image, then
+/// finds the swatch within.
+///
+/// # Key differences from standard pipeline:
+/// - WB estimated from band around detected rectangle (not from rectangle interior)
+/// - WB applied to full original image (not cropped region)
+/// - Works whether detected rectangle is paper or swatch
+///
+/// # Arguments
+///
+/// * `image_path` - Path to the image file
+/// * `config` - Pipeline configuration with all tunable parameters
+///
+/// # Returns
+///
+/// A tuple of (`ColorResult`, `DebugOutput`) containing color analysis and debug images
+pub fn analyze_swatch_first_with_config(image_path: &Path, config: &PipelineConfig) -> Result<(ColorResult, DebugOutput)> {
+    use crate::exif::extractor::ExifExtractor;
+    use crate::detection::{PaperDetector, SwatchDetector};
+    use crate::calibration::white_balance::WhiteBalanceEstimator;
+    use crate::color::analysis::ColorAnalyzer;
+    use crate::color::conversion::ColorConverter;
+
+    // Step 1: Load image
+    let mut image = opencv::imgcodecs::imread(
+        image_path.to_str().ok_or_else(|| {
+            AnalysisError::ProcessingError("Invalid image path encoding".into())
+        })?,
+        opencv::imgcodecs::IMREAD_COLOR,
+    )
+    .map_err(|e| AnalysisError::image_load("Failed to load image", e))?;
+
+    if image.empty() {
+        return Err(AnalysisError::ProcessingError("Image file is empty or corrupted".into()));
+    }
+
+    // Step 2: Extract EXIF metadata and apply orientation correction
+    let _metadata = ExifExtractor::extract_color_metadata(image_path)
+        .ok();
+
+    if config.preprocessing.exif_correction {
+        image = apply_exif_orientation(image, image_path)?;
+    }
+
+    // Clone original image for debug output
+    let original_image = image.clone();
+
+    // Step 3: Detect rectangle (could be paper or swatch - doesn't matter)
+    // We only need the bounding box, not the rectified image
+    let paper_detector = PaperDetector::with_params(
+        config.paper_detection.min_area_ratio,
+        config.paper_detection.max_rectification_angle,
+        config.paper_detection.poly_approx_epsilon,
+    );
+
+    // Get edges and find contour to extract bounding box
+    let rect_bounds = detect_rectangle_bounds(&image, &paper_detector)?;
+
+    // Step 4: Estimate WB from paper band OUTSIDE the detected rectangle
+    // This works whether the rectangle is paper or swatch - the band is paper in either case
+    let wb_estimator = WhiteBalanceEstimator::new();
+    let paper_band_result = wb_estimator.estimate_from_paper_band(&image, rect_bounds)?;
+
+    // Step 5: Apply white balance correction to FULL original image
+    let corrected_image = if config.preprocessing.white_balance.enabled {
+        wb_estimator.apply_correction(&image, paper_band_result.paper_color)?
+    } else {
+        image.clone()
+    };
+
+    // After white balance correction, paper should match target color
+    let target_paper_lab: palette::Lab = config.preprocessing.white_balance.target_paper.clone().into();
+
+    // Step 6: Detect ink swatch in the WB-corrected full image
+    // The swatch detector will find ink regions based on delta_E from paper
+    let swatch_detector = SwatchDetector::with_params(
+        config.swatch_detection.min_delta_e,
+        config.swatch_detection.min_area_ratio,
+        config.swatch_detection.max_area_ratio,
+    );
+
+    // Create empty foreign object mask for full image
+    let foreign_mask = opencv::core::Mat::zeros(corrected_image.rows(), corrected_image.cols(), opencv::core::CV_8UC1)
+        .map_err(|e| AnalysisError::ProcessingError(format!("Mask creation failed: {}", e)))?
+        .to_mat()
+        .map_err(|e| AnalysisError::ProcessingError(format!("Mask conversion failed: {}", e)))?;
+
+    let swatch_result = swatch_detector.detect(
+        &corrected_image,
+        &foreign_mask,
+        target_paper_lab,
+    )?;
+
+    // Step 7: Extract representative color from swatch
+    let color_analyzer = ColorAnalyzer::with_params(
+        config.color_extraction.min_ink_delta_e,
+        config.color_extraction.outlier_percentile_low,
+        config.color_extraction.outlier_percentile_high,
+    );
+
+    let method = match config.color_extraction.method.as_str() {
+        "MedianMean" => crate::color::ExtractionMethod::MedianMean,
+        "Darkest" => crate::color::ExtractionMethod::Darkest,
+        "MostSaturated" => crate::color::ExtractionMethod::MostSaturated,
+        "Mode" => crate::color::ExtractionMethod::Mode,
+        _ => crate::color::ExtractionMethod::MedianMean,
+    };
+
+    let color_analysis = color_analyzer.extract_color(
+        &corrected_image,
+        &swatch_result.swatch_mask,
+        target_paper_lab,
+        method,
+    )?;
+
+    // Step 8: Convert to multiple color spaces
+    let converter = ColorConverter::new();
+    let lch = converter.lab_to_lch(color_analysis.lab);
+    let srgb = converter.lab_to_srgb(color_analysis.lab);
+    let hex = converter.srgb_to_hex(srgb);
+
+    // Step 9: Convert to Munsell notation and ISCC-NBS color names
+    let (munsell, color_name, tone) = srgb_to_munsell_and_names(srgb);
+
+    // Step 10: Extract swatch fragment for debug output
+    let swatch_fragment = extract_swatch_fragment(&corrected_image, &swatch_result.swatch_mask)?;
+
+    // Step 11: Return results and debug output
+    let color_result = ColorResult {
+        lab: color_analysis.lab,
+        lch,
+        srgb,
+        hex,
+        munsell,
+        color_name,
+        tone,
+        confidence: color_analysis.confidence,
+    };
+
+    let debug_output = DebugOutput {
+        original_image,
+        corrected_image,
+        swatch_fragment,
+        swatch_mask: swatch_result.swatch_mask,
+    };
+
+    Ok((color_result, debug_output))
+}
+
+/// Detect rectangle bounds from image using edge detection
+/// Returns bounding box of detected rectangle (swatch or paper)
+fn detect_rectangle_bounds(image: &opencv::core::Mat, _paper_detector: &crate::detection::PaperDetector) -> Result<opencv::core::Rect> {
+    use opencv::core::{Point, Rect, Vector};
+    use opencv::imgproc::{approx_poly_dp, arc_length, find_contours, CHAIN_APPROX_SIMPLE, RETR_EXTERNAL};
+
+    // Detect edges
+    let mut gray = opencv::core::Mat::default();
+    opencv::imgproc::cvt_color(image, &mut gray, opencv::imgproc::COLOR_BGR2GRAY, 0, opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT)
+        .map_err(|e| AnalysisError::ProcessingError(format!("Grayscale conversion failed: {}", e)))?;
+
+    let mut blurred = opencv::core::Mat::default();
+    opencv::imgproc::gaussian_blur(
+        &gray,
+        &mut blurred,
+        opencv::core::Size::new(5, 5),
+        1.5,
+        1.5,
+        opencv::core::BORDER_CONSTANT,
+        opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT,
+    )
+    .map_err(|e| AnalysisError::ProcessingError(format!("Gaussian blur failed: {}", e)))?;
+
+    let mut edges = opencv::core::Mat::default();
+    opencv::imgproc::canny(&blurred, &mut edges, 30.0, 90.0, 3, false)
+        .map_err(|e| AnalysisError::ProcessingError(format!("Canny edge detection failed: {}", e)))?;
+
+    let kernel = opencv::imgproc::get_structuring_element(
+        opencv::imgproc::MORPH_RECT,
+        opencv::core::Size::new(3, 3),
+        Point::new(-1, -1),
+    )
+    .map_err(|e| AnalysisError::ProcessingError(format!("Kernel creation failed: {}", e)))?;
+
+    let mut dilated = opencv::core::Mat::default();
+    opencv::imgproc::dilate(
+        &edges,
+        &mut dilated,
+        &kernel,
+        Point::new(-1, -1),
+        1,
+        opencv::core::BORDER_CONSTANT,
+        opencv::core::Scalar::all(0.0),
+    )
+    .map_err(|e| AnalysisError::ProcessingError(format!("Dilation failed: {}", e)))?;
+
+    // Find contours
+    let mut contours: Vector<Vector<Point>> = Vector::new();
+    find_contours(&dilated, &mut contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE, Point::new(0, 0))
+        .map_err(|e| AnalysisError::ProcessingError(format!("Contour detection failed: {}", e)))?;
+
+    let image_area = (image.rows() * image.cols()) as f64;
+    let min_area = image_area * 0.05; // 5% minimum
+    let max_area = image_area * 0.90; // 90% maximum - exclude image border contours
+
+    let img_width = image.cols() as f64;
+    let img_height = image.rows() as f64;
+    let img_center_x = img_width / 2.0;
+    let img_center_y = img_height / 2.0;
+
+    let mut best_score = 0.0;
+    let mut best_rect: Option<Rect> = None;
+
+    for i in 0..contours.len() {
+        let contour = contours.get(i)
+            .map_err(|e| AnalysisError::ProcessingError(format!("Contour access failed: {}", e)))?;
+        let area = opencv::imgproc::contour_area(&contour, false)
+            .map_err(|e| AnalysisError::ProcessingError(format!("Area calculation failed: {}", e)))?;
+
+        // Skip contours that are too small or too large (image border detection)
+        if area < min_area || area > max_area {
+            continue;
+        }
+
+        // Approximate to polygon
+        let perimeter = arc_length(&contour, true)
+            .map_err(|e| AnalysisError::ProcessingError(format!("Perimeter calculation failed: {}", e)))?;
+        let epsilon = perimeter * 0.02;
+
+        let mut approx: Vector<Point> = Vector::new();
+        approx_poly_dp(&contour, &mut approx, epsilon, true)
+            .map_err(|e| AnalysisError::ProcessingError(format!("Polygon approximation failed: {}", e)))?;
+
+        // Only consider 4-sided polygons
+        if approx.len() == 4 {
+            let rect = opencv::imgproc::bounding_rect(&contour)
+                .map_err(|e| AnalysisError::ProcessingError(format!("Bounding rect failed: {}", e)))?;
+
+            let aspect = rect.width as f64 / rect.height as f64;
+            if aspect >= 0.33 && aspect <= 3.0 {
+                // Calculate centrality score
+                let rect_center_x = rect.x as f64 + rect.width as f64 / 2.0;
+                let rect_center_y = rect.y as f64 + rect.height as f64 / 2.0;
+                let distance = ((rect_center_x - img_center_x).powi(2) + (rect_center_y - img_center_y).powi(2)).sqrt();
+                let img_diagonal = (img_width.powi(2) + img_height.powi(2)).sqrt();
+                let centrality = 1.0 - (distance / img_diagonal);
+
+                let score = area * centrality;
+                if score > best_score {
+                    best_score = score;
+                    best_rect = Some(rect);
+                }
+            }
+        }
+    }
+
+    // Fallback to centered rectangle if no contour found
+    best_rect.ok_or_else(|| {
+        // Use center 50% of image as fallback
+        let margin_x = (img_width * 0.25) as i32;
+        let margin_y = (img_height * 0.25) as i32;
+        let _fallback = Rect::new(margin_x, margin_y, image.cols() - 2 * margin_x, image.rows() - 2 * margin_y);
+        AnalysisError::NoSwatchDetected("No rectangular region found - using center fallback".into())
+    }).or_else(|_| {
+        // Return center region as fallback
+        let margin_x = (img_width * 0.25) as i32;
+        let margin_y = (img_height * 0.25) as i32;
+        Ok(Rect::new(margin_x, margin_y, image.cols() - 2 * margin_x, image.rows() - 2 * margin_y))
+    })
+}
+
 /// Extract the swatch fragment from the rectified image using the mask
 ///
 /// Returns only the pixels that are actually used for color analysis (masked region).

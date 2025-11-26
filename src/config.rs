@@ -37,6 +37,13 @@ pub struct PreprocessingConfig {
 
     /// White balance correction settings
     pub white_balance: WhiteBalanceConfig,
+
+    /// Use swatch-first detection mode
+    /// When true, estimates WB from paper band outside detected rectangle
+    /// and applies WB to full image before swatch detection.
+    /// This handles cases where rectangle detection finds swatch instead of paper.
+    #[serde(default)]
+    pub swatch_first_mode: bool,
 }
 
 /// White balance correction parameters
@@ -167,6 +174,7 @@ impl PipelineConfig {
                         b: 0.0,
                     },
                 },
+                swatch_first_mode: false, // Default to standard pipeline
             },
             paper_detection: PaperDetectionConfig {
                 min_area_ratio: 0.05,
