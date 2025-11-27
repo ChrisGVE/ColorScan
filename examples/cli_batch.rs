@@ -68,7 +68,7 @@ fn main() {
     let mut csv_records: Vec<String> = Vec::new();
 
     // CSV header
-    csv_records.push("sample_name,hex,munsell,color_name,base_color,card_color,confidence,error".to_string());
+    csv_records.push("sample_name,hex,munsell,color_name,base_color,card_color,hex_recorrected,color_name_recorrected,base_color_recorrected,confidence,error".to_string());
 
     for (i, image_path) in image_files.iter().enumerate() {
         let filename = image_path.file_name()
@@ -100,14 +100,20 @@ fn main() {
 
                 // Add to CSV (no error)
                 let card_color = result.card_color_hex.as_deref().unwrap_or("");
+                let hex_recorr = result.hex_recorrected.as_deref().unwrap_or("");
+                let name_recorr = result.color_name_recorrected.as_deref().unwrap_or("");
+                let base_recorr = result.base_color_recorrected.as_deref().unwrap_or("");
                 csv_records.push(format!(
-                    "{},{},{},{},{},{},{:.3},",
+                    "{},{},{},{},{},{},{},{},{},{:.3},",
                     base_name,
                     result.hex,
                     result.munsell,
                     result.color_name,
                     result.base_color,
                     card_color,
+                    hex_recorr,
+                    name_recorr,
+                    base_recorr,
                     result.confidence
                 ));
 
@@ -124,7 +130,7 @@ fn main() {
 
                 // Add to CSV with error description
                 csv_records.push(format!(
-                    "{},,,,,,0.0,\"{}\"",
+                    "{},,,,,,,,0.0,\"{}\"",
                     base_name,
                     error_msg.replace("\"", "\"\"") // Escape quotes for CSV
                 ));
@@ -241,6 +247,16 @@ fn save_debug_output(
         &debug.swatch_mask,
         &Vector::new()
     )?;
+
+    // Save recorrected swatch fragment (if available - from swatch-first pipeline with card color)
+    if let Some(ref recorrected) = debug.swatch_fragment_recorrected {
+        let recorrected_path = output_dir.join(format!("{}_swatch_recorrected.png", base_name));
+        imgcodecs::imwrite(
+            recorrected_path.to_str().ok_or("Invalid path")?,
+            recorrected,
+            &Vector::new()
+        )?;
+    }
 
     Ok(())
 }

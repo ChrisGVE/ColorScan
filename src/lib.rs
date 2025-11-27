@@ -59,6 +59,13 @@ pub struct ColorResult {
     /// Paper card color (hex) extracted from original image before WB correction
     /// Only available in swatch-first mode
     pub card_color_hex: Option<String>,
+    /// Hex color after second WB correction using card_color
+    /// Only available in swatch-first mode when card_color is detected
+    pub hex_recorrected: Option<String>,
+    /// ISCC-NBS color name after second WB correction
+    pub color_name_recorrected: Option<String>,
+    /// ISCC-NBS base color after second WB correction
+    pub base_color_recorrected: Option<String>,
 }
 
 /// Debug output containing intermediate processing images
@@ -72,6 +79,9 @@ pub struct DebugOutput {
     pub swatch_fragment: opencv::core::Mat,
     /// Binary mask showing swatch region
     pub swatch_mask: opencv::core::Mat,
+    /// Swatch fragment after second WB correction using card_color
+    /// Only available in swatch-first mode when card_color is detected
+    pub swatch_fragment_recorrected: Option<opencv::core::Mat>,
 }
 
 /// Analyze a fountain pen ink swatch with a specified extraction method
@@ -169,6 +179,9 @@ pub fn analyze_swatch_with_method(image_path: &Path, method: crate::color::Extra
         tone,
         confidence: color_analysis.confidence,
         card_color_hex: None, // Not available in this pipeline
+        hex_recorrected: None,
+        color_name_recorrected: None,
+        base_color_recorrected: None,
     })
 }
 
@@ -276,6 +289,9 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
         tone,
         confidence: color_analysis.confidence,
         card_color_hex: None, // Not available in this pipeline
+        hex_recorrected: None,
+        color_name_recorrected: None,
+        base_color_recorrected: None,
     })
 }
 
@@ -410,6 +426,9 @@ pub fn analyze_swatch_debug_with_config(image_path: &Path, config: &PipelineConf
         tone,
         confidence: color_analysis.confidence,
         card_color_hex: None, // Not available in standard pipeline
+        hex_recorrected: None,
+        color_name_recorrected: None,
+        base_color_recorrected: None,
     };
 
     let debug_output = DebugOutput {
@@ -417,6 +436,7 @@ pub fn analyze_swatch_debug_with_config(image_path: &Path, config: &PipelineConf
         corrected_image,
         swatch_fragment,
         swatch_mask: swatch_result.swatch_mask,
+        swatch_fragment_recorrected: None, // Not available in standard pipeline
     };
 
     Ok((color_result, debug_output))
@@ -577,7 +597,43 @@ pub fn analyze_swatch_first_with_config(image_path: &Path, config: &PipelineConf
     // Step 11: Extract card color from original (pre-WB) image using inverse swatch mask
     let card_color_hex = extract_card_color(&original_image, &swatch_result.swatch_mask);
 
-    // Step 12: Return results and debug output
+    // Step 12: Apply second WB correction using card_color if available
+    let (hex_recorrected, color_name_recorrected, base_color_recorrected, swatch_fragment_recorrected) =
+        if let Some(ref card_hex) = card_color_hex {
+            // Parse card color hex to Lab for WB correction
+            if let Some(card_lab) = hex_to_lab(card_hex) {
+                // Apply second WB correction: treat card_color as actual paper color
+                // WB correction normalizes card_color -> neutral white
+                if let Ok(recorrected_image) = wb_estimator.apply_correction(&corrected_image, card_lab) {
+                    // Re-extract color from recorrected image using same mask
+                    if let Ok(recorrected_analysis) = color_analyzer.extract_color(
+                        &recorrected_image,
+                        &swatch_result.swatch_mask,
+                        target_paper_lab,
+                        method,
+                    ) {
+                        let recorrected_srgb = converter.lab_to_srgb(recorrected_analysis.lab);
+                        let recorrected_hex = converter.srgb_to_hex(recorrected_srgb);
+                        let (_, recorrected_name, recorrected_base, _) = srgb_to_munsell_and_names(recorrected_srgb);
+
+                        // Extract swatch fragment from recorrected image
+                        let recorrected_fragment = extract_swatch_fragment(&recorrected_image, &swatch_result.swatch_mask).ok();
+
+                        (Some(recorrected_hex), Some(recorrected_name), Some(recorrected_base), recorrected_fragment)
+                    } else {
+                        (None, None, None, None)
+                    }
+                } else {
+                    (None, None, None, None)
+                }
+            } else {
+                (None, None, None, None)
+            }
+        } else {
+            (None, None, None, None)
+        };
+
+    // Step 13: Return results and debug output
     let color_result = ColorResult {
         lab: color_analysis.lab,
         lch,
@@ -589,6 +645,9 @@ pub fn analyze_swatch_first_with_config(image_path: &Path, config: &PipelineConf
         tone,
         confidence: color_analysis.confidence,
         card_color_hex,
+        hex_recorrected,
+        color_name_recorrected,
+        base_color_recorrected,
     };
 
     let debug_output = DebugOutput {
@@ -596,6 +655,7 @@ pub fn analyze_swatch_first_with_config(image_path: &Path, config: &PipelineConf
         corrected_image,
         swatch_fragment,
         swatch_mask: swatch_result.swatch_mask,
+        swatch_fragment_recorrected,
     };
 
     Ok((color_result, debug_output))
@@ -1011,6 +1071,33 @@ fn extract_card_color(original_image: &opencv::core::Mat, swatch_mask: &opencv::
     Some(format!("#{:02X}{:02X}{:02X}", r, g, b))
 }
 
+/// Convert hex color string to Lab color space
+///
+/// # Arguments
+/// * `hex` - Hex color string (e.g., "#BFBFB7" or "BFBFB7")
+///
+/// # Returns
+/// Lab color if parsing succeeds, None otherwise
+fn hex_to_lab(hex: &str) -> Option<Lab> {
+    use palette::{Srgb, IntoColor};
+
+    // Remove leading '#' if present
+    let hex = hex.strip_prefix('#').unwrap_or(hex);
+
+    if hex.len() != 6 {
+        return None;
+    }
+
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+
+    let srgb: Srgb = Srgb::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+    let lab: Lab = srgb.into_color();
+
+    Some(lab)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1028,6 +1115,9 @@ mod tests {
             tone: "vivid".to_string(),
             confidence: 0.85,
             card_color_hex: None,
+            hex_recorrected: None,
+            color_name_recorrected: None,
+            base_color_recorrected: None,
         };
 
         let json = serde_json::to_string(&result).unwrap();

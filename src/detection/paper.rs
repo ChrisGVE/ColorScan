@@ -732,7 +732,7 @@ mod tests {
         let image = Mat::zeros(480, 640, opencv::core::CV_8UC3).unwrap().to_mat().unwrap();
         let binary = Mat::zeros(480, 640, opencv::core::CV_8UC1).unwrap().to_mat().unwrap();
 
-        let foreign_mask = detector.detect_foreign_objects(&image, &binary).unwrap();
+        let foreign_mask = detector.detect_foreign_objects_simple(&image).unwrap();
 
         // Should return empty mask for blank image
         assert_eq!(foreign_mask.rows(), 480);
