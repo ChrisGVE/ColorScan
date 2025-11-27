@@ -50,6 +50,8 @@ pub struct ColorResult {
     pub munsell: String,
     /// ISCC-NBS alternate color name - more readable (e.g., "dark purplish blue")
     pub color_name: String,
+    /// ISCC-NBS base color (e.g., "blue", "red", "gray")
+    pub base_color: String,
     /// ISCC-NBS standard descriptor (e.g., "d. pB" for "dark purplish blue")
     pub tone: String,
     /// Analysis confidence score (0.0 = low, 1.0 = high)
@@ -150,7 +152,7 @@ pub fn analyze_swatch_with_method(image_path: &Path, method: crate::color::Extra
     let hex = converter.srgb_to_hex(srgb);
 
     // Step 8: Convert to Munsell notation and ISCC-NBS color names
-    let (munsell, color_name, tone) = srgb_to_munsell_and_names(srgb);
+    let (munsell, color_name, base_color, tone) = srgb_to_munsell_and_names(srgb);
 
     // Step 9: Return complete result
     Ok(ColorResult {
@@ -160,6 +162,7 @@ pub fn analyze_swatch_with_method(image_path: &Path, method: crate::color::Extra
         hex,
         munsell,
         color_name,
+        base_color,
         tone,
         confidence: color_analysis.confidence,
     })
@@ -255,7 +258,7 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
     let hex = converter.srgb_to_hex(srgb);
 
     // Step 8: Convert to Munsell notation and ISCC-NBS color names
-    let (munsell, color_name, tone) = srgb_to_munsell_and_names(srgb);
+    let (munsell, color_name, base_color, tone) = srgb_to_munsell_and_names(srgb);
 
     // Step 9: Return complete result
     Ok(ColorResult {
@@ -265,6 +268,7 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
         hex,
         munsell,
         color_name,
+        base_color,
         tone,
         confidence: color_analysis.confidence,
     })
@@ -384,7 +388,7 @@ pub fn analyze_swatch_debug_with_config(image_path: &Path, config: &PipelineConf
     let hex = converter.srgb_to_hex(srgb);
 
     // Step 8: Convert to Munsell notation and ISCC-NBS color names
-    let (munsell, color_name, tone) = srgb_to_munsell_and_names(srgb);
+    let (munsell, color_name, base_color, tone) = srgb_to_munsell_and_names(srgb);
 
     // Step 9: Extract swatch fragment for debug output
     let swatch_fragment = extract_swatch_fragment(&corrected_image, &swatch_result.swatch_mask)?;
@@ -397,6 +401,7 @@ pub fn analyze_swatch_debug_with_config(image_path: &Path, config: &PipelineConf
         hex,
         munsell,
         color_name,
+        base_color,
         tone,
         confidence: color_analysis.confidence,
     };
@@ -558,7 +563,7 @@ pub fn analyze_swatch_first_with_config(image_path: &Path, config: &PipelineConf
     let hex = converter.srgb_to_hex(srgb);
 
     // Step 9: Convert to Munsell notation and ISCC-NBS color names
-    let (munsell, color_name, tone) = srgb_to_munsell_and_names(srgb);
+    let (munsell, color_name, base_color, tone) = srgb_to_munsell_and_names(srgb);
 
     // Step 10: Extract swatch fragment for debug output
     let swatch_fragment = extract_swatch_fragment(&corrected_image, &swatch_result.swatch_mask)?;
@@ -571,6 +576,7 @@ pub fn analyze_swatch_first_with_config(image_path: &Path, config: &PipelineConf
         hex,
         munsell,
         color_name,
+        base_color,
         tone,
         confidence: color_analysis.confidence,
     };
@@ -775,8 +781,8 @@ fn extract_swatch_fragment(image: &opencv::core::Mat, mask: &opencv::core::Mat) 
 
 /// Convert sRGB color to Munsell notation and ISCC-NBS color names
 ///
-/// Returns (munsell_notation, color_name, tone)
-fn srgb_to_munsell_and_names(srgb: Srgb) -> (String, String, String) {
+/// Returns (munsell_notation, color_name, base_color, tone)
+fn srgb_to_munsell_and_names(srgb: Srgb) -> (String, String, String, String) {
     use munsellspace::{MunsellConverter, IsccNbsClassifier};
 
     // Convert sRGB [0.0-1.0] to [0-255]
@@ -794,7 +800,7 @@ fn srgb_to_munsell_and_names(srgb: Srgb) -> (String, String, String) {
 
             // Try to get ISCC-NBS classification
             // munsell_color.hue is Option<String>, value is f64, chroma is Option<f64>
-            let (color_name, tone) = match (&munsell_color.hue, munsell_color.chroma) {
+            let (color_name, base_color, tone) = match (&munsell_color.hue, munsell_color.chroma) {
                 (Some(hue), Some(chroma)) => {
                     IsccNbsClassifier::new()
                         .ok()
@@ -803,20 +809,23 @@ fn srgb_to_munsell_and_names(srgb: Srgb) -> (String, String, String) {
                         })
                         .flatten()
                         .map(|metadata| {
-                            // ColorMetadata has iscc_nbs_descriptor() and alt_color_descriptor()
-                            // Use alternate descriptor as primary (more readable)
+                            // ColorMetadata fields:
+                            // - alt_color_name: base color for alternate descriptor
+                            // - alt_color_descriptor(): full alternate name (e.g., "dark purplish blue")
+                            // - iscc_nbs_descriptor(): full standard name
                             let color_name = metadata.alt_color_descriptor();
+                            let base_color = metadata.alt_color_name.clone();
                             let standard_name = metadata.iscc_nbs_descriptor();
-                            (color_name, standard_name)
+                            (color_name, base_color, standard_name)
                         })
-                        .unwrap_or_else(|| ("N/A".to_string(), "N/A".to_string()))
+                        .unwrap_or_else(|| ("N/A".to_string(), "N/A".to_string(), "N/A".to_string()))
                 }
-                _ => ("N/A".to_string(), "N/A".to_string()),
+                _ => ("N/A".to_string(), "N/A".to_string(), "N/A".to_string()),
             };
 
-            (munsell_str, color_name, tone)
+            (munsell_str, color_name, base_color, tone)
         }
-        Err(_) => ("N/A".to_string(), "N/A".to_string(), "N/A".to_string()),
+        Err(_) => ("N/A".to_string(), "N/A".to_string(), "N/A".to_string(), "N/A".to_string()),
     }
 }
 
