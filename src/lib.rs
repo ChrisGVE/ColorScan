@@ -48,9 +48,9 @@ pub struct ColorResult {
     pub hex: String,
     /// Munsell color notation (Hue Value/Chroma)
     pub munsell: String,
-    /// ISCC-NBS color name (e.g., "dark purplish blue")
+    /// ISCC-NBS alternate color name - more readable (e.g., "dark purplish blue")
     pub color_name: String,
-    /// ISCC-NBS tone modifier (e.g., "dark", "vivid")
+    /// ISCC-NBS standard descriptor (e.g., "d. pB" for "dark purplish blue")
     pub tone: String,
     /// Analysis confidence score (0.0 = low, 1.0 = high)
     pub confidence: f32,
@@ -804,9 +804,10 @@ fn srgb_to_munsell_and_names(srgb: Srgb) -> (String, String, String) {
                         .flatten()
                         .map(|metadata| {
                             // ColorMetadata has iscc_nbs_descriptor() and alt_color_descriptor()
-                            let primary_name = metadata.iscc_nbs_descriptor();
-                            let alt_name = metadata.alt_color_descriptor();
-                            (primary_name, alt_name)
+                            // Use alternate descriptor as primary (more readable)
+                            let color_name = metadata.alt_color_descriptor();
+                            let standard_name = metadata.iscc_nbs_descriptor();
+                            (color_name, standard_name)
                         })
                         .unwrap_or_else(|| ("N/A".to_string(), "N/A".to_string()))
                 }
