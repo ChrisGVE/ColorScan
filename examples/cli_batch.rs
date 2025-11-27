@@ -68,7 +68,7 @@ fn main() {
     let mut csv_records: Vec<String> = Vec::new();
 
     // CSV header
-    csv_records.push("sample_name,hex,munsell,color_name,base_color,confidence,error".to_string());
+    csv_records.push("sample_name,hex,munsell,color_name,base_color,card_color,confidence,error".to_string());
 
     for (i, image_path) in image_files.iter().enumerate() {
         let filename = image_path.file_name()
@@ -99,13 +99,15 @@ fn main() {
                 success_count += 1;
 
                 // Add to CSV (no error)
+                let card_color = result.card_color_hex.as_deref().unwrap_or("");
                 csv_records.push(format!(
-                    "{},{},{},{},{},{:.3},",
+                    "{},{},{},{},{},{},{:.3},",
                     base_name,
                     result.hex,
                     result.munsell,
                     result.color_name,
                     result.base_color,
+                    card_color,
                     result.confidence
                 ));
 
@@ -122,7 +124,7 @@ fn main() {
 
                 // Add to CSV with error description
                 csv_records.push(format!(
-                    "{},,,,,0.0,\"{}\"",
+                    "{},,,,,,0.0,\"{}\"",
                     base_name,
                     error_msg.replace("\"", "\"\"") // Escape quotes for CSV
                 ));

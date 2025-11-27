@@ -56,6 +56,9 @@ pub struct ColorResult {
     pub tone: String,
     /// Analysis confidence score (0.0 = low, 1.0 = high)
     pub confidence: f32,
+    /// Paper card color (hex) extracted from original image before WB correction
+    /// Only available in swatch-first mode
+    pub card_color_hex: Option<String>,
 }
 
 /// Debug output containing intermediate processing images
@@ -165,6 +168,7 @@ pub fn analyze_swatch_with_method(image_path: &Path, method: crate::color::Extra
         base_color,
         tone,
         confidence: color_analysis.confidence,
+        card_color_hex: None, // Not available in this pipeline
     })
 }
 
@@ -271,6 +275,7 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
         base_color,
         tone,
         confidence: color_analysis.confidence,
+        card_color_hex: None, // Not available in this pipeline
     })
 }
 
@@ -404,6 +409,7 @@ pub fn analyze_swatch_debug_with_config(image_path: &Path, config: &PipelineConf
         base_color,
         tone,
         confidence: color_analysis.confidence,
+        card_color_hex: None, // Not available in standard pipeline
     };
 
     let debug_output = DebugOutput {
@@ -568,7 +574,10 @@ pub fn analyze_swatch_first_with_config(image_path: &Path, config: &PipelineConf
     // Step 10: Extract swatch fragment for debug output
     let swatch_fragment = extract_swatch_fragment(&corrected_image, &swatch_result.swatch_mask)?;
 
-    // Step 11: Return results and debug output
+    // Step 11: Extract card color from original (pre-WB) image using inverse swatch mask
+    let card_color_hex = extract_card_color(&original_image, &swatch_result.swatch_mask);
+
+    // Step 12: Return results and debug output
     let color_result = ColorResult {
         lab: color_analysis.lab,
         lch,
@@ -579,6 +588,7 @@ pub fn analyze_swatch_first_with_config(image_path: &Path, config: &PipelineConf
         base_color,
         tone,
         confidence: color_analysis.confidence,
+        card_color_hex,
     };
 
     let debug_output = DebugOutput {
@@ -899,6 +909,108 @@ fn apply_exif_orientation(image: opencv::core::Mat, image_path: &Path) -> Result
     Ok(result)
 }
 
+/// Extract paper card color from original image using inverse of swatch mask
+///
+/// Samples paper pixels surrounding the ink swatch (within the detected rectangle)
+/// from the original image before white balance correction.
+///
+/// # Arguments
+/// * `original_image` - Original image before WB correction
+/// * `swatch_mask` - Binary mask where ink pixels are white (255)
+///
+/// # Returns
+/// Hex color string of the paper card, or None if extraction fails
+fn extract_card_color(original_image: &opencv::core::Mat, swatch_mask: &opencv::core::Mat) -> Option<String> {
+    use opencv::core::{Mat, Rect, Vector};
+    use palette::{Lab, Srgb, IntoColor, white_point::D65};
+
+    // Invert swatch mask to get paper pixels
+    let mut paper_mask = Mat::default();
+    let no_mask = Mat::default();
+    if opencv::core::bitwise_not(swatch_mask, &mut paper_mask, &no_mask).is_err() {
+        return None;
+    }
+
+    // Get bounding rect of swatch to focus on that region
+    let mut points = Vector::<opencv::core::Point>::new();
+    for y in 0..swatch_mask.rows() {
+        for x in 0..swatch_mask.cols() {
+            let pixel: u8 = *swatch_mask.at_2d(y, x).ok()?;
+            if pixel > 0 {
+                points.push(opencv::core::Point::new(x, y));
+            }
+        }
+    }
+
+    if points.len() < 10 {
+        return None;
+    }
+
+    let bbox = opencv::imgproc::bounding_rect(&points).ok()?;
+
+    // Expand bbox slightly to include surrounding paper (20% padding)
+    let pad_x = (bbox.width as f64 * 0.2) as i32;
+    let pad_y = (bbox.height as f64 * 0.2) as i32;
+    let expanded = Rect::new(
+        (bbox.x - pad_x).max(0),
+        (bbox.y - pad_y).max(0),
+        (bbox.width + 2 * pad_x).min(original_image.cols() - bbox.x + pad_x),
+        (bbox.height + 2 * pad_y).min(original_image.rows() - bbox.y + pad_y),
+    );
+
+    // Extract paper pixels from expanded region using inverse mask
+    let mut lab_values: Vec<[f32; 3]> = Vec::new();
+
+    for y in expanded.y..(expanded.y + expanded.height).min(original_image.rows()) {
+        for x in expanded.x..(expanded.x + expanded.width).min(original_image.cols()) {
+            // Check if this is a paper pixel (not swatch)
+            let mask_val: u8 = *paper_mask.at_2d(y, x).ok()?;
+            if mask_val == 0 {
+                continue; // This is a swatch pixel, skip
+            }
+
+            // Get BGR pixel from original image
+            let pixel: &opencv::core::Vec3b = original_image.at_2d(y, x).ok()?;
+            let b = pixel[0] as f32 / 255.0;
+            let g = pixel[1] as f32 / 255.0;
+            let r = pixel[2] as f32 / 255.0;
+
+            // Convert to Lab
+            let srgb: Srgb = Srgb::new(r, g, b);
+            let lab: Lab<D65, f32> = srgb.into_color();
+
+            // Filter out very dark or very bright pixels
+            if lab.l > 30.0 && lab.l < 100.0 {
+                lab_values.push([lab.l, lab.a, lab.b]);
+            }
+        }
+    }
+
+    if lab_values.len() < 100 {
+        return None;
+    }
+
+    // Calculate median Lab values
+    let mut l_vals: Vec<f32> = lab_values.iter().map(|v| v[0]).collect();
+    let mut a_vals: Vec<f32> = lab_values.iter().map(|v| v[1]).collect();
+    let mut b_vals: Vec<f32> = lab_values.iter().map(|v| v[2]).collect();
+
+    l_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    a_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    b_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mid = lab_values.len() / 2;
+    let median_lab: Lab<D65, f32> = Lab::new(l_vals[mid], a_vals[mid], b_vals[mid]);
+
+    // Convert to sRGB and hex
+    let card_srgb: Srgb = median_lab.into_color();
+    let r = (card_srgb.red.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let g = (card_srgb.green.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let b = (card_srgb.blue.clamp(0.0, 1.0) * 255.0).round() as u8;
+
+    Some(format!("#{:02X}{:02X}{:02X}", r, g, b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -912,8 +1024,10 @@ mod tests {
             hex: "#3366CC".to_string(),
             munsell: "5PB 5/10".to_string(),
             color_name: "vivid blue".to_string(),
+            base_color: "blue".to_string(),
             tone: "vivid".to_string(),
             confidence: 0.85,
+            card_color_hex: None,
         };
 
         let json = serde_json::to_string(&result).unwrap();
