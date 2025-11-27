@@ -836,6 +836,47 @@ def process_samples_with_cli(config_path):
     print(f"✓ Processed {len(samples)} samples", file=sys.stderr)
     return samples
 
+def load_cli_results(csv_path):
+    """Load CLI results from CSV file.
+
+    Returns:
+        Dictionary mapping sample_name to CLI result dict
+    """
+    import csv
+    cli_results = {}
+
+    if not Path(csv_path).exists():
+        return cli_results
+
+    with open(csv_path, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            sample_name = row.get('sample_name', '')
+            if not sample_name:
+                continue
+
+            color_name = row.get('color_name', '')
+            base_color = row.get('base_color', '')
+
+            # Create result in same format as process_sample returns
+            cli_results[sample_name] = {
+                'detection': 'CLI',
+                'extraction': 'MedianMean',
+                'colors': [{
+                    'name': color_name,
+                    'base': base_color,
+                    'pct': 100.0,
+                    'lab': None  # Not available from CSV
+                }],
+                'delta_l': 0.0,
+                'rel_delta_l': 0.0,
+                'same_base': False,
+                'shading': False
+            }
+
+    return cli_results
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: test_shading_detection.py <config.json>")
@@ -858,12 +899,20 @@ def main():
 
     output_dir = Path(config['output_path'])
 
+    # Load CLI results from CSV
+    csv_path = output_dir.parent / "results.csv"
+    cli_results = load_cli_results(csv_path)
+    print(f"Loaded {len(cli_results)} CLI results from CSV", file=sys.stderr)
+
     # Analyze swatch images for shading detection
     print("\nAnalyzing shading...", file=sys.stderr)
     all_results = {}
     for sample in samples:
         results = process_sample(str(output_dir), sample)
         if results:
+            # Insert CLI result at the beginning if available
+            if sample in cli_results:
+                results.insert(0, cli_results[sample])
             all_results[sample] = results
 
     # Generate both reports
