@@ -4,12 +4,16 @@ A Rust crate for analyzing fountain pen ink colors from digital photographs with
 
 ## Features
 
-- **Accurate Color Measurement**: Uses CIE Lab and LCh color spaces for perceptually uniform analysis
+- **Accurate Color Measurement**: CIE Lab and LCh color spaces for perceptually uniform analysis
 - **D65 Calibration**: Normalizes colors to industry-standard D65 illuminant
-- **Smartphone Compatible**: Optimized for modern smartphone camera images
-- **EXIF Aware**: Leverages camera metadata for improved white balance
-- **Fast Processing**: Target 100ms analysis time for typical images
-- **Confidence Scoring**: Provides reliability metrics for color measurements
+- **Munsell & ISCC-NBS Names**: Converts colors to Munsell notation and human-readable color names
+- **iPhone/HEIC Support**: Native HEIC/HEIF loading for iPhone photos (via libheif)
+- **20+ Image Formats**: JPEG, PNG, TIFF, WebP, HEIC, AVIF, and more
+- **Smartphone Optimized**: Handles varying lighting and camera characteristics
+- **EXIF Orientation**: Automatic image rotation based on EXIF metadata
+- **Adaptive White Balance**: Paper band sampling for robust color correction
+- **JSON Configuration**: All pipeline parameters configurable via JSON
+- **Confidence Scoring**: Reliability metrics for color measurements
 
 ## Quick Start
 
@@ -28,12 +32,38 @@ use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = analyze_swatch(Path::new("fountain_pen_swatch.jpg"))?;
-    
-    println!("Detected color: {}", result.hex);
-    println!("Lab values: L*={:.1}, a*={:.1}, b*={:.1}", 
-             result.lab.l, result.lab.a, result.lab.b);
+
+    println!("Hex: {}", result.hex);                    // #3B5998
+    println!("Munsell: {}", result.munsell);            // 7.5PB 4/8
+    println!("Color name: {}", result.color_name);      // dark purplish blue
+    println!("Base color: {}", result.base_color);      // blue
+    println!("Lab: L*={:.1}, a*={:.1}, b*={:.1}",
+             result.lab.l, result.lab.a, result.lab.b); // L*=40.2, a*=5.1, b*=-32.4
     println!("Confidence: {:.1}%", result.confidence * 100.0);
-    
+
+    Ok(())
+}
+```
+
+### With Configuration
+
+```rust
+use scan_colors::{analyze_swatch_debug_with_config, PipelineConfig};
+use std::path::Path;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load configuration from JSON
+    let config = PipelineConfig::from_json_file(Path::new("config.json"))?;
+
+    // Analyze with debug output (intermediate images)
+    let (result, debug) = analyze_swatch_debug_with_config(
+        Path::new("swatch.heic"),
+        &config
+    )?;
+
+    // Access debug images: debug.original_image, debug.corrected_image,
+    // debug.swatch_fragment, debug.swatch_mask
+
     Ok(())
 }
 ```
@@ -44,14 +74,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 # Analyze a single image
 cargo run --example cli photo.jpg
 
-# Output includes JSON for programmatic use
-cargo run --example cli swatch.heic > result.json
+# Analyze with JSON output
+cargo run --example cli swatch.heic --json
+
+# Batch processing with configuration file
+cargo run --example cli_batch config.json
+
+# Batch with CSV output
+cargo run --example cli_batch config.json --csv results.csv
 ```
 
-**Note**: The CLI tool (`examples/cli.rs`) is a **development and testing utility only**. It is:
-- Dynamically linked to system OpenCV for fast compile times during development
+**Batch Configuration** (`config.json`):
+```json
+{
+  "input_path": "/path/to/photos/",
+  "output_path": "/path/to/output/images/",
+  "file_pattern": "*.heic",
+  "white_balance": { "enabled": true },
+  "swatch_detection": { "luminance_threshold": 0.85 }
+}
+```
+
+**Note**: The CLI tools are **development and testing utilities only**:
+- Dynamically linked to system OpenCV for fast compile times
 - Not intended for distribution to end users
-- Used for validating crate functionality with real images and iterating on algorithms
+- Used for validating crate functionality and iterating on algorithms
 
 For production applications, see the Deployment section below.
 
@@ -81,7 +128,7 @@ For production applications, see the Deployment section below.
 
 - **Target Speed**: 100ms analysis time for smartphone images
 - **Memory Efficient**: Small footprint except during image processing
-- **Format Support**: JPEG, PNG, HEIC, and other common formats
+- **Format Support**: 21+ formats including JPEG, PNG, TIFF, WebP, HEIC/HEIF, AVIF, BMP, GIF, ICO, OpenEXR, PNM, QOI, TGA, and more
 
 ## Requirements
 
@@ -91,13 +138,26 @@ For production applications, see the Deployment section below.
   ```bash
   # macOS
   brew install opencv
-  
+
   # Ubuntu/Debian
   sudo apt install libopencv-dev
-  
+
   # Windows
   # See opencv-rust documentation
   ```
+
+- **libheif** (Optional): Required for HEIC/HEIF image support (iPhone photos)
+  ```bash
+  # macOS
+  brew install libheif
+
+  # Ubuntu/Debian
+  sudo apt install libheif-dev
+
+  # Windows
+  # See libheif documentation
+  ```
+  Note: Without libheif, the crate still supports 20+ other formats including JPEG, PNG, TIFF, and WebP.
 
 ### Rust Version
 
@@ -119,11 +179,16 @@ The following system components are required for building:
    - Must be discoverable via `pkg-config --exists opencv4`
    - Required modules: core, imgproc, imgcodecs, photo
 
-2. **pkg-config** - Build configuration discovery
+2. **libheif** (Optional) - HEIC/HEIF image format support
+   - Required only for iPhone HEIC photo support
+   - Must be discoverable via `pkg-config --exists libheif`
+   - Without this, all other formats still work
+
+3. **pkg-config** - Build configuration discovery
    - Used for OpenCV flags: `pkg-config --cflags --libs opencv4`
    - Handles include paths and linking automatically
 
-3. **C++ Compiler** - For OpenCV Rust bindings
+4. **C++ Compiler** - For OpenCV Rust bindings
    - Clang (preferred) or GCC
    - Required for bindgen code generation
 
@@ -131,9 +196,9 @@ The following system components are required for building:
 
 **macOS (Homebrew)**
 ```bash
-brew install opencv pkg-config
+brew install opencv pkg-config libheif
 # OpenCV 4.12.0 confirmed working
-# Located at: /usr/local/opt/opencv/
+# libheif 1.19+ for HEIC support
 ```
 
 **Build Verification**
@@ -230,27 +295,33 @@ cargo build
 
 ## Development Status
 
-**Current Version**: 0.1.0 (Initial Development)
+**Current Version**: 0.1.0 (Beta)
 
 ### Implemented
 - [x] Project structure and dependencies
 - [x] Core types and error handling
-- [x] D65 calibration constants
+- [x] D65 calibration constants and color spaces
 - [x] Module architecture
-- [x] CLI interface
-
-### In Progress
-- [ ] EXIF metadata extraction
-- [ ] Paper detection algorithms
-- [ ] White balance estimation
-- [ ] Swatch isolation
-- [ ] Color analysis pipeline
+- [x] CLI interface (single and batch processing)
+- [x] Unified image loader with 21+ format support
+- [x] HEIC/HEIF support for iPhone photos
+- [x] EXIF orientation handling
+- [x] Paper/swatch detection algorithms
+- [x] Adaptive white balance estimation
+- [x] Swatch isolation with luminance masking
+- [x] Color analysis pipeline
+- [x] Munsell notation conversion
+- [x] ISCC-NBS color naming
+- [x] JSON configuration system
+- [x] Debug output with intermediate images
+- [x] Comprehensive unit tests (67 tests)
 
 ### Planned
+- [ ] Multi-tone shading detection
+- [ ] API layer refinement
 - [ ] Performance optimization
-- [ ] Comprehensive testing
-- [ ] Documentation examples
 - [ ] Camera profile integration
+- [ ] crates.io publication
 
 ## Contributing
 
@@ -282,7 +353,9 @@ at your option.
 ## Acknowledgments
 
 Built on excellent Rust ecosystem crates:
-- [image](https://crates.io/crates/image) - Image processing
-- [opencv](https://crates.io/crates/opencv) - Computer vision
-- [palette](https://crates.io/crates/palette) - Color science
-- [empfindung](https://crates.io/crates/empfindung) - Color differences
+- [image](https://crates.io/crates/image) - Image decoding for 20+ formats
+- [libheif-rs](https://crates.io/crates/libheif-rs) - HEIC/HEIF support for iPhone photos
+- [opencv](https://crates.io/crates/opencv) - Computer vision operations
+- [palette](https://crates.io/crates/palette) - Color space conversions
+- [empfindung](https://crates.io/crates/empfindung) - CIEDE2000 color differences
+- [serde](https://crates.io/crates/serde) - JSON configuration serialization
