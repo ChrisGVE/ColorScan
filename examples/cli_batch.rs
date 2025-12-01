@@ -2,7 +2,7 @@
 //!
 //! Processes all images in a directory using a JSON configuration file
 
-use scan_colors::{analyze_swatch_debug_with_config, analyze_swatch_first_with_config, PipelineConfig};
+use scan_colors::{analyze_swatch_debug_with_config, analyze_swatch_first_with_config, PipelineConfig, image_loader};
 use std::{env, path::{Path, PathBuf}, process, fs};
 
 fn main() {
@@ -183,8 +183,8 @@ fn find_image_files(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
 
         if path.is_file() {
             if let Some(ext) = path.extension() {
-                let ext_str = ext.to_str().unwrap_or("").to_lowercase();
-                if matches!(ext_str.as_str(), "jpg" | "jpeg" | "png" | "heic") {
+                let ext_str = ext.to_str().unwrap_or("");
+                if image_loader::is_supported_extension(ext_str) {
                     // Skip flash images
                     if let Some(name) = path.file_name() {
                         if let Some(name_str) = name.to_str() {

@@ -31,6 +31,7 @@ pub mod detection;
 pub mod color;
 pub mod exif;
 pub mod config;
+pub mod image_loader;
 
 pub use error::{AnalysisError, Result};
 pub use config::PipelineConfig;
@@ -93,15 +94,10 @@ pub fn analyze_swatch_with_method(image_path: &Path, method: crate::color::Extra
     use crate::calibration::white_balance::WhiteBalanceEstimator;
     use crate::color::analysis::ColorAnalyzer;
     use crate::color::conversion::ColorConverter;
+    use crate::image_loader::load_image;
 
-    // Step 1: Load image
-    let mut image = opencv::imgcodecs::imread(
-        image_path.to_str().ok_or_else(|| {
-            AnalysisError::ProcessingError("Invalid image path encoding".into())
-        })?,
-        opencv::imgcodecs::IMREAD_COLOR,
-    )
-    .map_err(|e| AnalysisError::image_load("Failed to load image", e))?;
+    // Step 1: Load image using unified loader (supports JPEG, PNG, HEIC, etc.)
+    let mut image = load_image(image_path)?;
 
     if image.empty() {
         return Err(AnalysisError::ProcessingError("Image file is empty or corrupted".into()));
@@ -198,15 +194,10 @@ pub fn analyze_swatch(image_path: &Path) -> Result<ColorResult> {
     use crate::calibration::white_balance::WhiteBalanceEstimator;
     use crate::color::analysis::ColorAnalyzer;
     use crate::color::conversion::ColorConverter;
+    use crate::image_loader::load_image;
 
-    // Step 1: Load image
-    let mut image = opencv::imgcodecs::imread(
-        image_path.to_str().ok_or_else(|| {
-            AnalysisError::ProcessingError("Invalid image path encoding".into())
-        })?,
-        opencv::imgcodecs::IMREAD_COLOR,
-    )
-    .map_err(|e| AnalysisError::image_load("Failed to load image", e))?;
+    // Step 1: Load image using unified loader (supports JPEG, PNG, HEIC, etc.)
+    let mut image = load_image(image_path)?;
 
     if image.empty() {
         return Err(AnalysisError::ProcessingError("Image file is empty or corrupted".into()));
@@ -302,15 +293,10 @@ pub fn analyze_swatch_debug_with_config(image_path: &Path, config: &PipelineConf
     use crate::calibration::white_balance::WhiteBalanceEstimator;
     use crate::color::analysis::ColorAnalyzer;
     use crate::color::conversion::ColorConverter;
+    use crate::image_loader::load_image;
 
-    // Step 1: Load image
-    let mut image = opencv::imgcodecs::imread(
-        image_path.to_str().ok_or_else(|| {
-            AnalysisError::ProcessingError("Invalid image path encoding".into())
-        })?,
-        opencv::imgcodecs::IMREAD_COLOR,
-    )
-    .map_err(|e| AnalysisError::image_load("Failed to load image", e))?;
+    // Step 1: Load image using unified loader (supports JPEG, PNG, HEIC, etc.)
+    let mut image = load_image(image_path)?;
 
     if image.empty() {
         return Err(AnalysisError::ProcessingError("Image file is empty or corrupted".into()));
@@ -469,15 +455,10 @@ pub fn analyze_swatch_first_with_config(image_path: &Path, config: &PipelineConf
     use crate::calibration::white_balance::WhiteBalanceEstimator;
     use crate::color::analysis::ColorAnalyzer;
     use crate::color::conversion::ColorConverter;
+    use crate::image_loader::load_image;
 
-    // Step 1: Load image
-    let mut image = opencv::imgcodecs::imread(
-        image_path.to_str().ok_or_else(|| {
-            AnalysisError::ProcessingError("Invalid image path encoding".into())
-        })?,
-        opencv::imgcodecs::IMREAD_COLOR,
-    )
-    .map_err(|e| AnalysisError::image_load("Failed to load image", e))?;
+    // Step 1: Load image using unified loader (supports JPEG, PNG, HEIC, etc.)
+    let mut image = load_image(image_path)?;
 
     if image.empty() {
         return Err(AnalysisError::ProcessingError("Image file is empty or corrupted".into()));
