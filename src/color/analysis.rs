@@ -496,7 +496,7 @@ mod tests {
             Lab::new(52.0, 9.0, 9.0),
         ];
 
-        let repr = analyzer.compute_representative_color(&pixels).unwrap();
+        let repr = analyzer.compute_representative_color(&pixels, ExtractionMethod::MedianMean).unwrap();
 
         // L* should be median (50.0)
         assert!((repr.l - 50.0).abs() < 0.1);
