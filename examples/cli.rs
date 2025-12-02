@@ -1,8 +1,8 @@
-//! Command-line interface for scan_colors
+//! Command-line interface for inkswatch_colorscan
 //!
 //! Basic CLI tool for testing color analysis functionality
 
-use scan_colors::{analyze_swatch, analyze_swatch_debug, ColorResult};
+use inkswatch_colorscan::{analyze_swatch, analyze_swatch_debug, ColorResult};
 use std::{env, path::{Path, PathBuf}, process};
 use serde_json;
 
@@ -120,7 +120,7 @@ fn print_help(program_name: &str) {
     eprintln!("  {} --debug output/ swatch.heic", program_name);
 }
 
-fn save_debug_output(debug: &scan_colors::DebugOutput, output_dir: &Path, input_path: &Path) {
+fn save_debug_output(debug: &inkswatch_colorscan::DebugOutput, output_dir: &Path, input_path: &Path) {
     use opencv::imgcodecs;
     use opencv::core::Vector;
     use std::fs;

@@ -1,4 +1,4 @@
-//! Configuration structures for the scan_colors analysis pipeline.
+//! Configuration structures for the inkswatch_colorscan analysis pipeline.
 //!
 //! This module defines all tunable parameters for color analysis,
 //! organized into logical groups for preprocessing, detection, and extraction.
@@ -8,7 +8,7 @@
 //! Configuration can be loaded from JSON files or constructed programmatically:
 //!
 //! ```no_run
-//! use scan_colors::PipelineConfig;
+//! use inkswatch_colorscan::PipelineConfig;
 //! use std::path::Path;
 //!
 //! // Load from file

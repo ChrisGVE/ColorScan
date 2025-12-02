@@ -1,4 +1,4 @@
-use scan_colors::{analyze_swatch_with_method, analyze_swatch_debug, color::ExtractionMethod};
+use inkswatch_colorscan::{analyze_swatch_with_method, analyze_swatch_debug, color::ExtractionMethod};
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 use opencv::imgcodecs;
@@ -108,7 +108,7 @@ fn main() {
     }
 }
 
-fn save_debug_output(debug: &scan_colors::DebugOutput, output_dir: &Path, input_path: &Path) {
+fn save_debug_output(debug: &inkswatch_colorscan::DebugOutput, output_dir: &Path, input_path: &Path) {
     // Generate base filename from input
     let base_name = input_path
         .file_stem()

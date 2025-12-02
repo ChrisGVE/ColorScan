@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use scan_colors::{analyze_swatch, ColorResult};
+use inkswatch_colorscan::{analyze_swatch, ColorResult};
 use std::path::Path;
 
 fn benchmark_color_analysis(c: &mut Criterion) {

@@ -1,4 +1,4 @@
-//! Error types for the scan_colors library.
+//! Error types for the inkswatch_colorscan library.
 //!
 //! This module provides error types for all operations in the color analysis pipeline.
 //! Errors are categorized by their source (image loading, detection, extraction, etc.)
@@ -10,7 +10,7 @@
 //! as the error type.
 //!
 //! ```no_run
-//! use scan_colors::{analyze_swatch, AnalysisError};
+//! use inkswatch_colorscan::{analyze_swatch, AnalysisError};
 //! use std::path::Path;
 //!
 //! match analyze_swatch(Path::new("swatch.jpg")) {
@@ -31,7 +31,7 @@
 
 use thiserror::Error;
 
-/// Result type alias for scan_colors operations.
+/// Result type alias for inkswatch_colorscan operations.
 pub type Result<T> = std::result::Result<T, AnalysisError>;
 
 /// Error types for color analysis operations.

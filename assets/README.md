@@ -1,6 +1,6 @@
 # Test Assets
 
-This directory contains test images for validating the `scan_colors` library.
+This directory contains test images for validating the `inkswatch_colorscan` library.
 
 ## Directory Structure
 

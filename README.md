@@ -1,4 +1,4 @@
-# Scan Colors
+# InkSwatch ColorScan
 
 A Rust crate for analyzing fountain pen ink colors from digital photographs with calibrated color measurement.
 
@@ -21,13 +21,13 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-scan_colors = "0.1"
+inkswatch_colorscan = "0.1"
 ```
 
 ### Library Usage
 
 ```rust
-use scan_colors::{analyze_swatch, ColorResult};
+use inkswatch_colorscan::{analyze_swatch, ColorResult};
 use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### With Configuration
 
 ```rust
-use scan_colors::{analyze_swatch_debug_with_config, PipelineConfig};
+use inkswatch_colorscan::{analyze_swatch_debug_with_config, PipelineConfig};
 use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -256,7 +256,7 @@ match analyze_swatch(path) {
 
 ### For Library Users (Recommended)
 
-When using `scan_colors` as a library dependency in your application, you have several OpenCV deployment options:
+When using `inkswatch_colorscan` as a library dependency in your application, you have several OpenCV deployment options:
 
 **1. Dynamic Linking** (Development/Testing)
 - Default configuration - links to system-installed OpenCV

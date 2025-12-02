@@ -1,10 +1,10 @@
 [package]
-name = "scan_colors"
+name = "inkswatch_colorscan"
 version = "0.1.0"
 edition = "2021"
-authors = ["scan_colors contributors"]
-description = "Fountain pen ink color analysis with calibrated color measurement"
-repository = "https://github.com/ChrisGVE/ColorScan"
+authors = ["Christian C. Berclaz"]
+description = "Fountain pen ink swatch color analysis from photographs"
+repository = "https://github.com/ChrisGVE/InkSwatchColorScan"
 license = "MIT OR Apache-2.0"
 keywords = ["color", "image-processing", "fountain-pen", "colorimetry", "computer-vision"]
 categories = ["multimedia::images", "science", "computer-vision"]

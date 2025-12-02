@@ -110,13 +110,13 @@ impl ImageFormat {
 /// # Example
 ///
 /// ```rust,no_run
-/// use scan_colors::image_loader::load_image;
+/// use inkswatch_colorscan::image_loader::load_image;
 /// use opencv::prelude::MatTraitConst;
 /// use std::path::Path;
 ///
 /// let mat = load_image(Path::new("photo.jpg"))?;
 /// println!("Loaded image: {}x{}", mat.cols(), mat.rows());
-/// # Ok::<(), scan_colors::AnalysisError>(())
+/// # Ok::<(), inkswatch_colorscan::AnalysisError>(())
 /// ```
 pub fn load_image(path: &Path) -> Result<Mat> {
     // Detect format from extension

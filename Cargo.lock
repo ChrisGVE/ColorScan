@@ -783,6 +783,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "inkswatch_colorscan"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "approx",
+ "criterion",
+ "empfindung",
+ "image",
+ "imageproc",
+ "kamadak-exif",
+ "lab",
+ "libheif-rs",
+ "munsellspace",
+ "opencv",
+ "palette",
+ "rgb",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "interpolate_name"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1624,28 +1646,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
-]
-
-[[package]]
-name = "scan_colors"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "approx",
- "criterion",
- "empfindung",
- "image",
- "imageproc",
- "kamadak-exif",
- "lab",
- "libheif-rs",
- "munsellspace",
- "opencv",
- "palette",
- "rgb",
- "serde",
- "serde_json",
- "thiserror",
 ]
 
 [[package]]

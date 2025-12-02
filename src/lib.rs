@@ -11,12 +11,12 @@
 //! ## Example
 //!
 //! ```rust,no_run
-//! use scan_colors::{analyze_swatch, ColorResult};
+//! use inkswatch_colorscan::{analyze_swatch, ColorResult};
 //! use std::path::Path;
 //!
 //! let result = analyze_swatch(Path::new("photo.jpg"))?;
 //! println!("Lab: {:?}, Hex: {}", result.lab, result.hex);
-//! # Ok::<(), scan_colors::AnalysisError>(())
+//! # Ok::<(), inkswatch_colorscan::AnalysisError>(())
 //! ```
 
 use std::path::Path;

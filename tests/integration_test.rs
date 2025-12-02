@@ -11,7 +11,7 @@
 //! Note: Tests requiring sample images are marked with #[ignore] until
 //! test assets are created. See tests/README.md for test image requirements.
 
-use scan_colors::{analyze_swatch, ColorResult, AnalysisError};
+use inkswatch_colorscan::{analyze_swatch, ColorResult, AnalysisError};
 use std::path::Path;
 
 // ============================================================================

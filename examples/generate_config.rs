@@ -2,7 +2,7 @@
 //!
 //! Creates a JSON config with all default parameters
 
-use scan_colors::PipelineConfig;
+use inkswatch_colorscan::PipelineConfig;
 use std::{env, path::Path, process};
 
 fn main() {

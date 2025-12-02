@@ -1,8 +1,8 @@
-//! Batch CLI for scan_colors with JSON configuration
+//! Batch CLI for inkswatch_colorscan with JSON configuration
 //!
 //! Processes all images in a directory using a JSON configuration file
 
-use scan_colors::{analyze_swatch_debug_with_config, analyze_swatch_first_with_config, PipelineConfig, image_loader};
+use inkswatch_colorscan::{analyze_swatch_debug_with_config, analyze_swatch_first_with_config, PipelineConfig, image_loader};
 use std::{env, path::{Path, PathBuf}, process, fs};
 
 fn main() {
@@ -203,7 +203,7 @@ fn find_image_files(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
 }
 
 fn save_debug_output(
-    debug: &scan_colors::DebugOutput,
+    debug: &inkswatch_colorscan::DebugOutput,
     output_dir: &Path,
     base_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
