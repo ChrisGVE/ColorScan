@@ -1,13 +1,39 @@
-//! Configuration structures for scan_colors pipeline
+//! Configuration structures for the scan_colors analysis pipeline.
 //!
-//! Defines all tunable parameters for the color analysis pipeline,
-//! allowing complete reproducibility and experimentation.
+//! This module defines all tunable parameters for color analysis,
+//! organized into logical groups for preprocessing, detection, and extraction.
+//!
+//! # Configuration Loading
+//!
+//! Configuration can be loaded from JSON files or constructed programmatically:
+//!
+//! ```no_run
+//! use scan_colors::PipelineConfig;
+//! use std::path::Path;
+//!
+//! // Load from file
+//! let config = PipelineConfig::from_json_file(Path::new("config.json"))?;
+//!
+//! // Or use defaults
+//! let config = PipelineConfig::default_experiment_0();
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! # Configuration Sections
+//!
+//! - [`PreprocessingConfig`]: EXIF correction, white balance settings
+//! - [`PaperDetectionConfig`]: Edge detection and contour parameters
+//! - [`SwatchDetectionConfig`]: Ink region isolation settings
+//! - [`ColorExtractionConfig`]: Statistical extraction methods
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use palette::Lab;
 
-/// Complete pipeline configuration
+/// Complete pipeline configuration for color analysis.
+///
+/// Contains all parameters needed to process an image from input to color result.
+/// Can be serialized to/from JSON for reproducible experiments.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {
     /// Input directory or file path
@@ -29,7 +55,9 @@ pub struct PipelineConfig {
     pub color_extraction: ColorExtractionConfig,
 }
 
-/// Preprocessing parameters
+/// Preprocessing parameters applied before detection.
+///
+/// Controls image orientation correction and white balance normalization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreprocessingConfig {
     /// Apply EXIF orientation correction
@@ -46,7 +74,10 @@ pub struct PreprocessingConfig {
     pub swatch_first_mode: bool,
 }
 
-/// White balance correction parameters
+/// White balance correction parameters.
+///
+/// When enabled, the pipeline estimates the paper color and adjusts
+/// the image to normalize to the target paper color (typically neutral white).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhiteBalanceConfig {
     /// Enable white balance correction
@@ -56,7 +87,9 @@ pub struct WhiteBalanceConfig {
     pub target_paper: LabColor,
 }
 
-/// Lab color for configuration
+/// Lab color representation for configuration files.
+///
+/// Uses CIE L*a*b* color space coordinates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LabColor {
     pub l: f32,
@@ -70,7 +103,11 @@ impl From<LabColor> for Lab {
     }
 }
 
-/// Paper detection parameters
+/// Paper detection parameters.
+///
+/// Controls the edge detection and contour analysis used to locate
+/// the paper card in the image. Parameters affect sensitivity and
+/// which rectangular regions are considered valid paper candidates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaperDetectionConfig {
     /// Minimum paper area as fraction of image (0.0-1.0)
@@ -107,7 +144,10 @@ pub struct PaperDetectionConfig {
     pub centrality_weight: f64,
 }
 
-/// Swatch detection parameters
+/// Swatch detection parameters.
+///
+/// Controls how ink regions are identified and isolated from the paper background.
+/// Uses color difference thresholds and morphological operations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwatchDetectionConfig {
     /// Minimum color difference (ΔE) to separate ink from paper
@@ -126,7 +166,10 @@ pub struct SwatchDetectionConfig {
     pub boundary_erosion: i32,
 }
 
-/// Color extraction parameters
+/// Color extraction parameters.
+///
+/// Controls how the representative ink color is computed from the
+/// detected swatch pixels. Includes outlier filtering and validation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColorExtractionConfig {
     /// Extraction method: "MedianMean", "Darkest", "MostSaturated", "Mode"
@@ -148,7 +191,10 @@ pub struct ColorExtractionConfig {
     pub lightness_bounds: LightnessBounds,
 }
 
-/// Lightness validation bounds
+/// Lightness validation bounds.
+///
+/// Defines the acceptable range of L* values for ink colors.
+/// Values outside this range may indicate detection errors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LightnessBounds {
     /// Minimum L* value

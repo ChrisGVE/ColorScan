@@ -1,11 +1,45 @@
-//! Error types for the scan_colors library
+//! Error types for the scan_colors library.
+//!
+//! This module provides error types for all operations in the color analysis pipeline.
+//! Errors are categorized by their source (image loading, detection, extraction, etc.)
+//! and include context to help diagnose issues.
+//!
+//! # Error Handling
+//!
+//! All public functions in this crate return [`Result<T>`], which uses [`AnalysisError`]
+//! as the error type.
+//!
+//! ```no_run
+//! use scan_colors::{analyze_swatch, AnalysisError};
+//! use std::path::Path;
+//!
+//! match analyze_swatch(Path::new("swatch.jpg")) {
+//!     Ok(result) => println!("Color: {}", result.hex),
+//!     Err(e) => {
+//!         eprintln!("Analysis failed: {}", e);
+//!         if e.is_recoverable() {
+//!             eprintln!("Suggestion: {}", e.user_message());
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! # User-Friendly Messages
+//!
+//! Each error variant provides a [`user_message()`](AnalysisError::user_message) method
+//! that returns guidance suitable for display to end users.
 
 use thiserror::Error;
 
-/// Result type alias for scan_colors operations
+/// Result type alias for scan_colors operations.
 pub type Result<T> = std::result::Result<T, AnalysisError>;
 
-/// Comprehensive error types for color analysis operations
+/// Error types for color analysis operations.
+///
+/// Each variant corresponds to a specific failure mode in the analysis pipeline.
+/// Use [`is_recoverable()`](Self::is_recoverable) to check if the error might be
+/// resolved by adjusting input or parameters, and [`user_message()`](Self::user_message)
+/// to get guidance for end users.
 #[derive(Error, Debug)]
 pub enum AnalysisError {
     /// Image file could not be loaded or decoded

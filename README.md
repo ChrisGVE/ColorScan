@@ -4,16 +4,16 @@ A Rust crate for analyzing fountain pen ink colors from digital photographs with
 
 ## Features
 
-- **Accurate Color Measurement**: CIE Lab and LCh color spaces for perceptually uniform analysis
-- **D65 Calibration**: Normalizes colors to industry-standard D65 illuminant
-- **Munsell & ISCC-NBS Names**: Converts colors to Munsell notation and human-readable color names
-- **iPhone/HEIC Support**: Native HEIC/HEIF loading for iPhone photos (via libheif)
-- **20+ Image Formats**: JPEG, PNG, TIFF, WebP, HEIC, AVIF, and more
-- **Smartphone Optimized**: Handles varying lighting and camera characteristics
+- **Color Measurement**: CIE Lab and LCh color spaces for perceptually uniform analysis
+- **D65 Calibration**: Normalizes colors to D65 illuminant
+- **Munsell & ISCC-NBS Names**: Converts colors to Munsell notation and descriptive color names
+- **HEIC/HEIF Support**: Loads iPhone photos via libheif (optional dependency)
+- **Multiple Image Formats**: Supports JPEG, PNG, TIFF, WebP, HEIC, AVIF, and others
+- **Smartphone Compatible**: Handles varying lighting and camera characteristics
 - **EXIF Orientation**: Automatic image rotation based on EXIF metadata
-- **Adaptive White Balance**: Paper band sampling for robust color correction
-- **JSON Configuration**: All pipeline parameters configurable via JSON
-- **Confidence Scoring**: Reliability metrics for color measurements
+- **White Balance**: Paper band sampling for color correction
+- **JSON Configuration**: Pipeline parameters configurable via JSON
+- **Confidence Scoring**: Provides reliability metrics for measurements
 
 ## Quick Start
 
@@ -104,11 +104,11 @@ For production applications, see the Deployment section below.
 
 ## How It Works
 
-1. **Paper Detection**: Locates and rectifies the paper/card surface using computer vision
+1. **Paper Detection**: Locates and rectifies the paper/card surface using edge detection
 2. **White Balance**: Estimates illuminant from paper region and applies D65 normalization
 3. **Swatch Isolation**: Detects ink regions and separates from background
-4. **Color Extraction**: Performs robust statistical analysis handling gradients and transparency
-5. **Calibration**: Applies research-based corrections for accurate color representation
+4. **Color Extraction**: Computes representative color using statistical methods
+5. **Color Naming**: Converts Lab values to Munsell notation and ISCC-NBS color names
 
 ## Technical Details
 
@@ -120,15 +120,14 @@ For production applications, see the Deployment section below.
 
 ### Calibration Standards
 
-- **Reference Illuminant**: D65 (6504K) - industry standard for digital images
-- **Color Accuracy**: Target ΔE < 3.0 for fountain pen ink differentiation
-- **White Balance**: Supports temperature range 3000K-6500K
+- **Reference Illuminant**: D65 (6504K) standard illuminant
+- **Color Difference**: Uses CIEDE2000 for perceptual color comparisons
+- **White Balance**: Designed for indoor lighting (3000K-6500K range)
 
 ### Performance
 
-- **Target Speed**: 100ms analysis time for smartphone images
-- **Memory Efficient**: Small footprint except during image processing
-- **Format Support**: 21+ formats including JPEG, PNG, TIFF, WebP, HEIC/HEIF, AVIF, BMP, GIF, ICO, OpenEXR, PNM, QOI, TGA, and more
+- **Processing Time**: Typically under 100ms per image on modern hardware
+- **Format Support**: JPEG, PNG, TIFF, WebP, HEIC/HEIF, AVIF, BMP, GIF, ICO, OpenEXR, PNM, QOI, TGA, and others
 
 ## Requirements
 
@@ -204,7 +203,7 @@ brew install opencv pkg-config libheif
 **Build Verification**
 ```bash
 # Test OpenCV detection
-pkg-config --exists opencv4 && echo "✓ OpenCV found"
+pkg-config --exists opencv4 && echo "OpenCV found"
 pkg-config --modversion opencv4  # Should show 4.x.x
 
 # Test compilation
@@ -295,33 +294,35 @@ cargo build
 
 ## Development Status
 
-**Current Version**: 0.1.0 (Beta)
+**Current Version**: 0.1.0 (Early Development)
+
+This crate is functional but still under active development. The API may change between versions.
 
 ### Implemented
-- [x] Project structure and dependencies
-- [x] Core types and error handling
-- [x] D65 calibration constants and color spaces
-- [x] Module architecture
-- [x] CLI interface (single and batch processing)
-- [x] Unified image loader with 21+ format support
-- [x] HEIC/HEIF support for iPhone photos
-- [x] EXIF orientation handling
-- [x] Paper/swatch detection algorithms
-- [x] Adaptive white balance estimation
-- [x] Swatch isolation with luminance masking
-- [x] Color analysis pipeline
-- [x] Munsell notation conversion
-- [x] ISCC-NBS color naming
-- [x] JSON configuration system
-- [x] Debug output with intermediate images
-- [x] Comprehensive unit tests (67 tests)
+- Project structure and dependencies
+- Core types and error handling
+- D65 calibration constants and color spaces
+- CLI interface (single and batch processing)
+- Image loader with multiple format support
+- HEIC/HEIF support (requires libheif)
+- EXIF orientation handling
+- Paper/swatch detection
+- White balance estimation
+- Color analysis pipeline
+- Munsell notation conversion
+- ISCC-NBS color naming
+- JSON configuration system
+- Unit tests
+
+### Known Limitations
+- Detection may fail on complex backgrounds or unusual lighting
+- White balance assumes neutral paper background
+- Not tested with all smartphone camera models
 
 ### Planned
-- [ ] Multi-tone shading detection
-- [ ] API layer refinement
-- [ ] Performance optimization
-- [ ] Camera profile integration
-- [ ] crates.io publication
+- Multi-tone shading detection
+- API refinement
+- Additional camera profile support
 
 ## Contributing
 
@@ -352,10 +353,10 @@ at your option.
 
 ## Acknowledgments
 
-Built on excellent Rust ecosystem crates:
-- [image](https://crates.io/crates/image) - Image decoding for 20+ formats
-- [libheif-rs](https://crates.io/crates/libheif-rs) - HEIC/HEIF support for iPhone photos
-- [opencv](https://crates.io/crates/opencv) - Computer vision operations
+This crate uses the following dependencies:
+- [image](https://crates.io/crates/image) - Image decoding
+- [libheif-rs](https://crates.io/crates/libheif-rs) - HEIC/HEIF support
+- [opencv](https://crates.io/crates/opencv) - Computer vision
 - [palette](https://crates.io/crates/palette) - Color space conversions
 - [empfindung](https://crates.io/crates/empfindung) - CIEDE2000 color differences
-- [serde](https://crates.io/crates/serde) - JSON configuration serialization
+- [serde](https://crates.io/crates/serde) - Serialization

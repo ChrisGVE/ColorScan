@@ -47,10 +47,10 @@ pub struct ExposureInfo {
 pub struct ExifExtractor;
 
 impl ExifExtractor {
-    /// Extract EXIF orientation value from image file
+    /// Extract EXIF orientation value from image file.
     ///
     /// Returns the EXIF orientation value (1-8) or 1 (normal) if not found.
-    /// See: https://www.impulseadventure.com/photo/exif-orientation.html
+    /// See: <https://www.impulseadventure.com/photo/exif-orientation.html>
     pub fn extract_orientation(image_path: &Path) -> u16 {
         use exif::{In, Reader, Tag};
         use std::fs::File;
