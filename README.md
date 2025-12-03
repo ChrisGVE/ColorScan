@@ -1,5 +1,10 @@
 # InkSwatch ColorScan
 
+[![Crates.io](https://img.shields.io/crates/v/inkswatch_colorscan.svg)](https://crates.io/crates/inkswatch_colorscan)
+[![Downloads](https://img.shields.io/crates/d/inkswatch_colorscan.svg)](https://crates.io/crates/inkswatch_colorscan)
+[![Documentation](https://docs.rs/inkswatch_colorscan/badge.svg)](https://docs.rs/inkswatch_colorscan)
+[![License](https://img.shields.io/crates/l/inkswatch_colorscan.svg)](https://crates.io/crates/inkswatch_colorscan)
+
 A Rust crate for analyzing fountain pen ink colors from digital photographs with calibrated color measurement.
 
 ## Features
