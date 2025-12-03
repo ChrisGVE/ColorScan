@@ -361,6 +361,7 @@ at your option.
 This crate uses the following dependencies:
 - [image](https://crates.io/crates/image) - Image decoding
 - [libheif-rs](https://crates.io/crates/libheif-rs) - HEIC/HEIF support
+- [munsellspace](https://crates.io/crates/munsellspace) - Munsell color system and ISCC-NBS color naming
 - [opencv](https://crates.io/crates/opencv) - Computer vision
 - [palette](https://crates.io/crates/palette) - Color space conversions
 - [empfindung](https://crates.io/crates/empfindung) - CIEDE2000 color differences
